@@ -21,7 +21,9 @@ Reference format: (x, y, z, yaw, dx, dy, dz, dyaw)
     ```python3 graphical.py```
 
 6. Real‑Time Plotting (inside nero_drone/nero_drone)  
-    ```python3 graphs.py```
+```
+python3 graphs.py
+```
 
 ## Notes
 
