@@ -5,33 +5,34 @@ This repository provides a ROS 2 control framework for the Parrot Bebop drone. I
 ## Launch Instructions
 
 1. Start the Parrot Bebop Driver  
-    ```bash
+
+```
 ros2 launch ros2_bebop_driver bebop_node_launch.xml ip:=192.168.42.1
 ```
 
 2. Launch the GUI:  
-    ```bash
+```
 ros2 launch nero_drone full_bebop.launch.py
 ```
 
 3. Run the Velocity Logger  
-    ```bash
+```
 ros2 run nero_drone velocity_logger
 ```
 
 4. Publish Reference Trajectory  
 Reference format: (x, y, z, yaw, dx, dy, dz, dyaw)  
-    ```bash
+```
 ros2 run nero_drone ref_pos.py
 ```
 
 5. Offline Plotting (inside nero_drone/nero_drone)  
-    ```bash
+```
 python3 graphical.py
 ```
 
 6. Real‑Time Plotting (inside nero_drone/nero_drone)  
-```bash
+```
 python3 graphs.py
 ```
 
