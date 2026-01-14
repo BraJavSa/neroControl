@@ -64,7 +64,6 @@ ament_target_dependencies(ref_vec_filter
   std_msgs
   visualization_msgs
   tf2_geometry_msgs
-
 )
 
 add_executable(tagfollow src/tagfollow.cpp)
@@ -78,6 +77,18 @@ ament_target_dependencies(tagfollow
   tf2_ros
   visualization_msgs
 )
+add_executable(bebop_odometry src/bebop_odometry.cpp)
+
+ament_target_dependencies(bebop_odometry
+  rclcpp
+  geometry_msgs
+  nav_msgs
+  std_msgs
+  tf2
+  tf2_ros
+)
+
+
 add_executable(visual src/visual.cpp)
 ament_target_dependencies(visual
   rclcpp
@@ -119,6 +130,7 @@ install(TARGETS
   land
   ref_vec_filter
   isfly
+  bebop_odometry
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -128,7 +140,6 @@ install(PROGRAMS
   nero_drone/apriltag.py
   nero_drone/takeoff.py
   nero_drone/land.py
-  nero_drone/demo_takeoff_land.py
   nero_drone/calibration_publish.py
   nero_drone/bebop_control_gui.py
   nero_drone/ref_pos.py

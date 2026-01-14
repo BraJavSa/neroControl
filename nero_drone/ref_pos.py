@@ -17,7 +17,7 @@ class RefPublisher(Node):
 
         # --------------------- Parámetros ---------------------
         self.dt = 1.0 / 30.0   # 30 Hz
-        self.hold_time = 10.0   # 8 segundos por pose
+        self.hold_time = 12.0   # 8 segundos por pose
         self.t0 = time.time()
         self.idx = 0           # Índice de punto actual
 

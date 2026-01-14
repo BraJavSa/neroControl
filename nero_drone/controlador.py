@@ -7,9 +7,6 @@ from std_msgs.msg import Float64MultiArray, Bool
 import numpy as np
 from math import sin, cos, pi, atan2, asin
 
-# ============================================================================
-# ESTRUCTURAS
-# ============================================================================
 class Position:
     def __init__(self):
         self.X = np.zeros(12)        # [x y z roll pitch yaw vx vy vz wx wy wz]
@@ -28,7 +25,6 @@ class Parameters:
         self.Model_simp = np.array([0.8417, 0.18227, 0.8354, 0.17095,
                                     3.966, 4.001, 9.8524, 4.7295])
         self.g = 9.8
-        self.Altmax = 2000.0
         self.uSat = np.ones(6)
 
 class SC:
@@ -38,13 +34,11 @@ class SC:
         self.Kinematics_control = 1
         self.tcontrol = None
 
-# ============================================================================
-# CLASE BEBOP
-# ============================================================================
+
 class Bebop:
     def __init__(self, node: Node):
         self.node = node
-        self.dt = 0.1  # 10 Hz
+        self.dt = 1/30  # 30 Hz
         self.pPos = Position()
         self.pPar = Parameters()
         self.pSC = SC()
@@ -60,7 +54,6 @@ class Bebop:
         self.pub_cmd = node.create_publisher(Twist, "/safe_bebop/cmd_vel", 10)
         self.pOdom = None
 
-    # ---------------------------------------------------------------------
     def odom_callback(self, msg: Odometry):
         self.pOdom = msg
 
@@ -86,18 +79,14 @@ class Bebop:
     def is_flying_callback(self, msg: Bool):
         self.is_flying = msg.data
 
-    # ---------------------------------------------------------------------
     def rGetSensorData(self):
         if self.pOdom is None:
             return
-
-        # Guardar última posición
         self.pPos.Xa = self.pPos.X.copy()
 
         pose = self.pOdom.pose.pose
         twist = self.pOdom.twist.twist
 
-        # Conversión de cuaternión a Euler (roll, pitch, yaw)
         qw, qx, qy, qz = pose.orientation.w, pose.orientation.x, pose.orientation.y, pose.orientation.z
         sinr_cosp = 2 * (qw * qx + qy * qz)
         cosr_cosp = 1 - 2 * (qx * qx + qy * qy)
@@ -110,11 +99,9 @@ class Bebop:
         cosy_cosp = 1 - 2 * (qy * qy + qz * qz)
         yaw = atan2(siny_cosp, cosy_cosp)
 
-        # Asignar posición y orientación
         self.pPos.X[0:6] = [pose.position.x, pose.position.y, pose.position.z,
                              roll, pitch, yaw]
 
-        # Velocidades (cuerpo → global)
         dXc = np.array([twist.linear.x, twist.linear.y, twist.linear.z, twist.angular.z])
         psi = self.pPos.X[5]
         F = np.array([[cos(psi), -sin(psi), 0, 0],
@@ -124,7 +111,6 @@ class Bebop:
         dX = F @ dXc
         auxdX12 = (self.pPos.X[5] - self.pPos.Xa[5]) / self.dt
 
-        # Velocidades globales (igual al MATLAB)
         self.pPos.X[6]  = dX[0] * self.pPar.uSat[3]
         self.pPos.X[7]  = dX[1] * self.pPar.uSat[4]
         self.pPos.X[8]  = dX[2] * self.pPar.uSat[5]
@@ -134,18 +120,32 @@ class Bebop:
         self.pPos.dX[:] = [self.pPos.X[6], self.pPos.X[7], self.pPos.X[8],
                            self.pPos.X[9], self.pPos.X[10], self.pPos.X[11]]
 
-    # ---------------------------------------------------------------------
     def cInverseDynamicController_Compensador(self, gains=None):
         if not self.ref_received:
             return
 
-
-        gains = [1.2, 1.2, 3, 1.5,
-                    1.0, 1.0, 1.8, 1.2,
-                    1.7, 1.7, 1, 1.5]
+        """
+        #position gains
+        
+        gains = [1.1, 1.1, 3, 1.5,
+                    0.8, 0.8, 1.8, 1.2,
+                    1.6, 1.6, 1, 1.5]
+        """
+        """
+        #trajectory gains
+        gains = [1.05, 1.05, 1.5, 1.6,
+                    1.2, 1.2, 1.2, 1.2,
+                    1.0, 1.04, 1, 1.6]
+        
+        """            
+        """ image follow
+        """
+        gains = [2.0, 2.0, 3, 1.5,
+                    1.3, 1.3, 1.8, 1.2,
+                    1.0, 1.0, 1, 1.5]
+        
         g = np.array(gains)
 
-        # Modelo
         Ku = np.diag([self.pPar.Model_simp[0], self.pPar.Model_simp[2],
                       self.pPar.Model_simp[4], self.pPar.Model_simp[6]])
         Kv = np.diag([self.pPar.Model_simp[1], self.pPar.Model_simp[3],
@@ -153,13 +153,11 @@ class Bebop:
         Ksp = np.diag(g[0:4])
         Ksd = np.diag(g[4:8])
         Kp  = np.diag(g[8:12])
-        # Estados
         X   = np.array([self.pPos.X[0], self.pPos.X[1], self.pPos.X[2], self.pPos.X[5]])
         dX  = np.array([self.pPos.X[6], self.pPos.X[7], self.pPos.X[8], self.pPos.X[11]])
         Xd  = np.array([self.pPos.Xd[0], self.pPos.Xd[1], self.pPos.Xd[2], self.pPos.Xr[5]])
         dXd = np.array([self.pPos.dXd[0], self.pPos.dXd[1], self.pPos.dXd[2], self.pPos.dXd[3]])
 
-        # Erros (protección)
         if np.linalg.norm(self.pPos.Xtil) == 0:
             Xtil = Xd - X
         else:
@@ -170,28 +168,23 @@ class Bebop:
         if abs(Xtil[3]) > pi:
             Xtil[3] = Xtil[3] - 2 * pi * np.sign(Xtil[3])
 
-        # Controle cinemático
         Ucw_ant = np.copy(self.pSC.Ur)
         Ucw = dXd + Ksp @ np.tanh(Kp @ Xtil)
         dUcw = (Ucw - Ucw_ant) / max(self.dt, 1e-3)
         self.pSC.Ur = np.copy(Ucw)
 
-        # Cinemática direta
         F = np.array([[cos(X[3]), -sin(X[3]), 0, 0],
                       [sin(X[3]),  cos(X[3]), 0, 0],
                       [0, 0, 1, 0],
                       [0, 0, 0, 1]])
 
-        # Compensador dinâmico
         Udw = np.linalg.inv(F @ Ku) @ (dUcw + Ksd @ (Ucw - dX) + Kv @ dX)
-
-        # Comandos enviados ao Bebop 2
+        #Udw[2]=0.0
         self.pSC.Ud[0:3] = Udw[0:3]
         self.pSC.Ud[3:5] = 0.0
         self.pSC.Ud[5] = Udw[3]
         self.pSC.tcontrol = self.node.get_clock().now()
 
-    # ---------------------------------------------------------------------
     def rSendControlSignals(self):
         if not self.ref_received or not self.is_flying:
             return
@@ -202,20 +195,18 @@ class Bebop:
         cmd.angular.z = float(np.clip(self.pSC.Ud[5], -self.pPar.uSat[5], self.pPar.uSat[5]))
         self.pub_cmd.publish(cmd)
 
-# ============================================================================
 class NeroDroneNode(Node):
     def __init__(self):
         super().__init__("nero_drone_node")
-        self.get_logger().info("Nero Drone Node iniciado (modo cinemático, 10 Hz)")
+        self.get_logger().info("Nero Drone Node iniciado (modo cinemático, 30 Hz)")
         self.drone = Bebop(self)
-        self.create_timer(0.1, self.control_loop)
+        self.create_timer(1/30, self.control_loop)
 
     def control_loop(self):
         self.drone.rGetSensorData()
         self.drone.cInverseDynamicController_Compensador([])
         self.drone.rSendControlSignals()
 
-# ============================================================================
 def main(args=None):
     rclpy.init(args=args)
     node = NeroDroneNode()

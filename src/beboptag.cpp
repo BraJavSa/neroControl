@@ -19,7 +19,7 @@ public:
         apriltag_detector_add_family(td_, tf_);
 
         sub_info_ = this->create_subscription<sensor_msgs::msg::CameraInfo>(
-            "/bebop/camera/calibration_info", 10,
+            "/bebop/camera/camera_info", 10,
             std::bind(&BebopTagNode::camera_info_callback, this, std::placeholders::_1));
 
         sub_image_ = this->create_subscription<sensor_msgs::msg::Image>(

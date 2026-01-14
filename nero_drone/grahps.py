@@ -54,7 +54,7 @@ class RealTimePlot(Node):
             t = time.time() - self.start_time
             x = msg.pose.pose.position.x
             y = msg.pose.pose.position.y
-            z = 1.0  # fixed altitude
+            z = msg.pose.pose.position.z
             q = msg.pose.pose.orientation
             quat = [q.x, q.y, q.z, q.w]
             _, _, yaw = tf_transformations.euler_from_quaternion(quat)
@@ -119,11 +119,10 @@ class RealTimePlot(Node):
                 if i == 0 or i == 1:  # x, y
                     ax.set_ylim(-2.0, 2.0)
                 elif i == 2:  # z
-                    y_min = 0.0
-                    y_max = max(1.1 * (max(self.z_data + [1.0])), 1.1)
-                    ax.set_ylim(y_min, y_max)
+                   
+                    ax.set_ylim(0.0, 2.5)
                 else:  # yaw
-                    ax.set_ylim(-np.pi, np.pi)
+                    ax.set_ylim(-np.pi*1.1, np.pi*1.1)
 
             plt.pause(0.001)
 

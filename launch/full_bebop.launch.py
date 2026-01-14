@@ -23,7 +23,6 @@ def generate_launch_description():
             output='screen'
         ),
 
-
         Node(
             package='nero_drone',
             executable='isfly',
@@ -31,18 +30,24 @@ def generate_launch_description():
             output='screen',
         ),       
 
-
-        Node(
-            package='nero_drone',
-            executable='inverse_dynamic_controller',
-            name='inverse_dynamic_controller',
-            output='screen',
-        ),   
-
         Node(
             package='nero_drone',
             executable='bebop_control_gui.py',
             name='bebop_control_gui',
+            output='screen'
+        ),
+        
+        Node(
+            package='nero_drone',
+            executable='tf_cam',
+            name='tf_cam',
+            output='screen'
+        ),
+
+        Node(
+            package='nero_drone',
+            executable='ref_vec_filter',
+            name='ref_vec_filter',
             output='screen'
         ),
 
@@ -58,6 +63,12 @@ def generate_launch_description():
             package='rviz2',
             executable='rviz2',
             arguments=['-d', rviz_config],
+            output='screen'
+        ),
+        Node(
+            package='nero_drone',
+            executable='controlador.py',
+            name='controlador',
             output='screen'
         ),
     ])
