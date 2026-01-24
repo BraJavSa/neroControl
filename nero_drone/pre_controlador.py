@@ -7,7 +7,6 @@ from std_msgs.msg import Float64MultiArray, Bool
 import numpy as np
 from math import sin, cos, pi, atan2, asin
 
-
 class Position:
     def __init__(self):
         self.X = np.zeros(12)        # [x y z roll pitch yaw vx vy vz wx wy wz]
@@ -21,14 +20,12 @@ class Position:
         self.Xr = np.zeros(12)
         self.Xa = np.zeros(12)
 
-
 class Parameters:
     def __init__(self):
         self.Model_simp = np.array([0.8417, 0.18227, 0.8354, 0.17095,
                                     3.966, 4.001, 9.8524, 4.7295])
         self.g = 9.8
         self.uSat = np.ones(6)
-
 
 class SC:
     def __init__(self):
@@ -51,16 +48,21 @@ class Bebop:
         self.first_ref = True
         self.last_ref = np.zeros(8)
 
+        # estado estimado (predictor) en mundo
+        # X_pred = [x, y, z, yaw]
+        # dX_pred = [vx, vy, vz, wy]
+        self.X_pred = np.zeros(4)
+        self.dX_pred = np.zeros(4)
+        self.first_odom = True
+
         self.sub_odom = node.create_subscription(Odometry, "/bebop/odom", self.odom_callback, 10)
         self.sub_ref = node.create_subscription(Float64MultiArray, "/bebop/ref_vec", self.ref_callback, 10)
         self.sub_is_flying = node.create_subscription(Bool, "/bebop/is_flying", self.is_flying_callback, 10)
         self.pub_cmd = node.create_publisher(Twist, "/safe_bebop/cmd_vel", 10)
         self.pOdom = None
 
-        # timestamp de última referencia
-        self.last_ref_time = self.node.get_clock().now()
-
     def odom_callback(self, msg: Odometry):
+        # guardamos el último mensaje; lo usaremos en rGetSensorData
         self.pOdom = msg
 
     def ref_callback(self, msg: Float64MultiArray):
@@ -70,35 +72,38 @@ class Bebop:
 
         self.ref_received = True
         data = np.array(msg.data)
-
-        self.pPos.Xd[0:3] = data[0:3]
-        self.pPos.Xr[5] = data[3]
-        self.pPos.dXd[0:3] = data[4:7]
-        self.pPos.dXd[3] = data[7]
+        self.pPos.Xd[0:3] = data[0:3]        # X, Y, Z
+        self.pPos.Xr[5] = data[3]            # Psi (Yaw)
+        self.pPos.dXd[0:3] = data[4:7]       # dX, dY, dZ
+        self.pPos.dXd[3] = data[7]           # dPsi
 
         if not self.first_ref:
             self.pPos.ddXd = (data[4:8] - self.last_ref[4:8]) / self.dt
         else:
             self.pPos.ddXd = np.zeros(4)
             self.first_ref = False
-
         self.last_ref = data
-
-        # actualizar timestamp de referencia
-        self.last_ref_time = self.node.get_clock().now()
 
     def is_flying_callback(self, msg: Bool):
         self.is_flying = msg.data
 
     def rGetSensorData(self):
+        """
+        Ahora:
+        - De la odometría solo tomamos POSICIÓN (x,y,z,yaw) a 5Hz.
+        - Las velocidades SIEMPRE vienen del modelo (dX_pred), a 30Hz.
+        - En cada llamada copiamos el estado predicho a pPos.X / pPos.dX
+          para que el controlador lo use.
+        """
+        # Si nunca recibimos odometría, no tenemos nada confiable
         if self.pOdom is None:
             return
-        self.pPos.Xa = self.pPos.X.copy()
 
+        # Tomar solo la pose del mensaje (posición + orientación) cuando llega
         pose = self.pOdom.pose.pose
-        twist = self.pOdom.twist.twist
-
         qw, qx, qy, qz = pose.orientation.w, pose.orientation.x, pose.orientation.y, pose.orientation.z
+
+        # roll y pitch los podemos calcular, aunque el controlador usa yaw
         sinr_cosp = 2 * (qw * qx + qy * qz)
         cosr_cosp = 1 - 2 * (qx * qx + qy * qy)
         roll = atan2(sinr_cosp, cosr_cosp)
@@ -110,51 +115,71 @@ class Bebop:
         cosy_cosp = 1 - 2 * (qy * qy + qz * qz)
         yaw = atan2(siny_cosp, cosy_cosp)
 
-        self.pPos.X[0:6] = [pose.position.x, pose.position.y, pose.position.z, roll, pitch, yaw]
+        # Actualizamos SOLO posición estimada desde odometría
+        self.X_pred[0:4] = [pose.position.x, pose.position.y, pose.position.z, yaw]
 
-        dXc = np.array([twist.linear.x, twist.linear.y, twist.linear.z, twist.angular.z])
-        psi = self.pPos.X[5]
-        F = np.array([[cos(psi), -sin(psi), 0, 0],
-                      [sin(psi),  cos(psi), 0, 0],
-                      [0, 0, 1, 0],
-                      [0, 0, 0, 1]])
-        dX = F @ dXc
-        auxdX12 = (self.pPos.X[5] - self.pPos.Xa[5]) / self.dt
+        # Primera odometría → velocidad inicial a cero
+        if self.first_odom:
+            self.dX_pred[:] = 0.0
+            self.first_odom = False
 
-        self.pPos.X[6]  = dX[0] * self.pPar.uSat[3]
-        self.pPos.X[7]  = dX[1] * self.pPar.uSat[4]
-        self.pPos.X[8]  = dX[2] * self.pPar.uSat[5]
-        self.pPos.X[9:11] = 0.0
-        self.pPos.X[11] = auxdX12 * self.pPar.uSat[2]
+        # Ahora volcamos el estado PREDICHO (no el twist del odom) a pPos.X
+        self.pPos.X[0:3] = self.X_pred[0:3]
+        self.pPos.X[3]   = roll
+        self.pPos.X[4]   = pitch
+        self.pPos.X[5]   = self.X_pred[3]  # yaw
+
+        # Velocidades en mundo desde el modelo
+        self.pPos.X[6]  = self.dX_pred[0]
+        self.pPos.X[7]  = self.dX_pred[1]
+        self.pPos.X[8]  = self.dX_pred[2]
+        self.pPos.X[9]  = 0.0
+        self.pPos.X[10] = 0.0
+        self.pPos.X[11] = self.dX_pred[3]
 
         self.pPos.dX[:] = [self.pPos.X[6], self.pPos.X[7], self.pPos.X[8],
                            self.pPos.X[9], self.pPos.X[10], self.pPos.X[11]]
 
-    def cInverseDynamicController_Compensador(self, gains=None, opc=1):
-        if not self.ref_received:
+    def predict_dynamics(self):
+        """
+        Propaga el estado (X_pred, dX_pred) con el modelo simplificado
+        a 30 Hz, usando la última acción de control Ud.
+        Este es el bloque de predicción que llena las velocidades.
+        """
+        # Sólo predecimos si estamos volando y ya tenemos referencia y odometría inicial
+        if not self.is_flying or not self.ref_received or self.first_odom:
             return
 
-        pos_gains = [1.1440739631652832, 1.0809911489486694, 1.035915493965149, 3.6370913982391357,
-                     4.129997253417969, 4.124101638793945, 5.163672924041748, 4.529935359954834,
-                     1.4677437543869019, 1.6020582914352417, 2.086393117904663, 2.658264636993408]
+        # u = [ux_b, uy_b, uz_b, wz]
+        u = np.array([self.pSC.Ud[0], self.pSC.Ud[1], self.pSC.Ud[2], self.pSC.Ud[5]])
 
-        th_gains = [0.2948657274246216, 0.282520592212677, 0.33964332938194275, 2.4078164100646973, 4.946599960327148, 4.323536396026611, 6.013118267059326, 10.796932220458984, 0.29646456241607666, 0.28467491269111633, 3.555035352706909, 1.9480745792388916]
+        psi = self.X_pred[3]
+        c, s = np.cos(psi), np.sin(psi)
+        F = np.array([[c, -s, 0, 0],
+                      [s,  c, 0, 0],
+                      [0,  0, 1, 0],
+                      [0,  0, 0, 1]])
 
-        # selección según opc
-        if opc == 1:
-            gains = pos_gains
-        elif opc == 2:
-            e_xyz = np.array([
-                self.pPos.Xd[0] - self.pPos.X[0],
-                self.pPos.Xd[1] - self.pPos.X[1],
-                self.pPos.Xd[2] - self.pPos.X[2]
-            ])
-            norm_e = np.linalg.norm(e_xyz)
-            gains = pos_gains if norm_e > 0.15 else th_gains
-        else:
-            gains = pos_gains
+        Ku = np.diag([self.pPar.Model_simp[0], self.pPar.Model_simp[2],
+                      self.pPar.Model_simp[4], self.pPar.Model_simp[6]])
+        Kv = np.diag([self.pPar.Model_simp[1], self.pPar.Model_simp[3],
+                      self.pPar.Model_simp[5], self.pPar.Model_simp[7]])
 
+        xdd = F @ (Ku @ u) - Kv @ self.dX_pred
+        self.dX_pred = self.dX_pred + xdd * self.dt
+        self.X_pred = self.X_pred + self.dX_pred * self.dt
+
+    def cInverseDynamicController_Compensador(self, gains=None):
+        if not self.ref_received or self.first_odom:
+            return
+
+        sec_gains = [0.7970586,  0.906231,   1.1352181,  2.3002846,
+                     9.682192,   9.793912,   7.0167503, 10.824284,
+                     0.75959104, 0.8954135,  5.9189963, 2.023179]
+
+        gains = sec_gains
         g = np.array(gains)
+
         Ku = np.diag([self.pPar.Model_simp[0], self.pPar.Model_simp[2],
                       self.pPar.Model_simp[4], self.pPar.Model_simp[6]])
         Kv = np.diag([self.pPar.Model_simp[1], self.pPar.Model_simp[3],
@@ -163,6 +188,7 @@ class Bebop:
         Ksd = np.diag(g[4:8])
         Kp  = np.diag(g[8:12])
 
+        # Estado tomado ahora del predictor (via pPos.X)
         X   = np.array([self.pPos.X[0], self.pPos.X[1], self.pPos.X[2], self.pPos.X[5]])
         dX  = np.array([self.pPos.X[6], self.pPos.X[7], self.pPos.X[8], self.pPos.X[11]])
         Xd  = np.array([self.pPos.Xd[0], self.pPos.Xd[1], self.pPos.Xd[2], self.pPos.Xr[5]])
@@ -175,36 +201,34 @@ class Bebop:
                              self.pPos.Xtil[2], self.pPos.Xtil[5]])
 
         if abs(Xtil[3]) > pi:
-            Xtil[3] = Xtil[3] - 2*pi*np.sign(Xtil[3])
+            Xtil[3] = Xtil[3] - 2 * pi * np.sign(Xtil[3])
 
         Ucw_ant = np.copy(self.pSC.Ur)
         Ucw = dXd + Ksp @ np.tanh(Kp @ Xtil)
         dUcw = (Ucw - Ucw_ant) / max(self.dt, 1e-3)
         self.pSC.Ur = np.copy(Ucw)
 
-        F = np.array([[np.cos(X[3]), -np.sin(X[3]), 0, 0],
-                      [np.sin(X[3]),  np.cos(X[3]), 0, 0],
+        F = np.array([[cos(X[3]), -sin(X[3]), 0, 0],
+                      [sin(X[3]),  cos(X[3]), 0, 0],
                       [0, 0, 1, 0],
                       [0, 0, 0, 1]])
 
         Udw = np.linalg.inv(F @ Ku) @ (dUcw + Ksd @ (Ucw - dX) + Kv @ dX)
-
+        #Udw[2]=0.0
         self.pSC.Ud[0:3] = Udw[0:3]
         self.pSC.Ud[3:5] = 0.0
         self.pSC.Ud[5] = Udw[3]
         self.pSC.tcontrol = self.node.get_clock().now()
 
     def rSendControlSignals(self):
-        if not self.ref_received or not self.is_flying:
+        if not self.ref_received or not self.is_flying or self.first_odom:
             return
-
         cmd = Twist()
         cmd.linear.x = float(np.clip(self.pSC.Ud[0], -self.pPar.uSat[0], self.pPar.uSat[0]))
         cmd.linear.y = float(np.clip(self.pSC.Ud[1], -self.pPar.uSat[1], self.pPar.uSat[1]))
         cmd.linear.z = float(np.clip(self.pSC.Ud[2], -self.pPar.uSat[2], self.pPar.uSat[2]))
         cmd.angular.z = float(np.clip(self.pSC.Ud[5], -self.pPar.uSat[5], self.pPar.uSat[5]))
         self.pub_cmd.publish(cmd)
-
 
 class NeroDroneNode(Node):
     def __init__(self):
@@ -214,21 +238,17 @@ class NeroDroneNode(Node):
         self.create_timer(1/30, self.control_loop)
 
     def control_loop(self):
-        now = self.get_clock().now()
-        dt_ref = (now - self.drone.last_ref_time).nanoseconds * 1e-9
-
-        # ===========================
-        # SAFE HOLD si no hay ref > 1s
-        # ===========================
-        if dt_ref > 1.0:
-            self.drone.pSC.Ud[:] = 0.0
-            self.drone.rSendControlSignals()
-            return
-
+        # 1) Actualizar estado estimado con la última odometría (solo posición)
         self.drone.rGetSensorData()
+
+        # 2) Calcular control usando estado estimado (X_pred, dX_pred)
         self.drone.cInverseDynamicController_Compensador([])
+
+        # 3) Enviar comandos
         self.drone.rSendControlSignals()
 
+        # 4) Bloque de predicción: actualizar X_pred, dX_pred con el modelo a 30 Hz
+        self.drone.predict_dynamics()
 
 def main(args=None):
     rclpy.init(args=args)
@@ -240,7 +260,6 @@ def main(args=None):
     finally:
         node.destroy_node()
         rclpy.shutdown()
-
 
 if __name__ == "__main__":
     main()

@@ -36,6 +36,10 @@ add_executable(beboptag src/beboptag.cpp)
 ament_target_dependencies(beboptag rclcpp sensor_msgs cv_bridge OpenCV)
 target_link_libraries(beboptag apriltag ${OpenCV_LIBS})
 
+add_executable(ibvs src/ibvs.cpp)
+ament_target_dependencies(ibvs rclcpp sensor_msgs cv_bridge OpenCV)
+target_link_libraries(ibvs apriltag ${OpenCV_LIBS})
+
 add_executable(tf_cam src/tf_cam.cpp)
 ament_target_dependencies(tf_cam rclcpp tf2 tf2_ros geometry_msgs nav_msgs std_msgs tf2_geometry_msgs)
 
@@ -86,7 +90,9 @@ ament_target_dependencies(bebop_odometry
   std_msgs
   tf2
   tf2_ros
+  tf2_geometry_msgs
 )
+
 
 
 add_executable(visual src/visual.cpp)
@@ -107,6 +113,27 @@ ament_target_dependencies(safety_watchdog
   rclcpp
   geometry_msgs
   std_msgs
+)
+
+
+add_executable(tag_pos src/tag_pos.cpp)
+
+ament_target_dependencies(tag_pos
+  rclcpp
+  sensor_msgs
+  nav_msgs
+  geometry_msgs
+  std_msgs
+  cv_bridge
+  OpenCV
+  tf2
+  tf2_ros
+  tf2_geometry_msgs
+)
+
+target_link_libraries(tag_pos
+  apriltag
+  ${OpenCV_LIBS}
 )
 
 add_executable(safe_bebop_republisher src/bridge_cmd.cpp)
@@ -131,6 +158,8 @@ install(TARGETS
   ref_vec_filter
   isfly
   bebop_odometry
+  ibvs
+  tag_pos
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -145,6 +174,9 @@ install(PROGRAMS
   nero_drone/ref_pos.py
   nero_drone/ref_trayectory.py
   nero_drone/controlador.py
+  nero_drone/pre_controlador.py
+  nero_drone/sim.py
+  nero_drone/tf_to_gazebo.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
