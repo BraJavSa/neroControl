@@ -17,7 +17,7 @@ def generate_launch_description():
         # === SIMULADOR BEBOP ===
         Node(
             package='nero_drone',
-            executable='sim.py',
+            executable='sim120.py',
             name='bebop_sim',
             output='screen'
         ),

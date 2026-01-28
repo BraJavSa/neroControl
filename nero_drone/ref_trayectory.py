@@ -40,14 +40,14 @@ class RefPublisher(Node):
         w = self.omega
 
         # position
-        x = 1.5 * np.sin(w * t)
-        y = 1.5 * np.sin(w * t) * np.cos(w * t)
-        z = 1.0 + 0.3 * np.sin(0.5 * w * t) - 0.5
+        x = 0.8 * np.sin(w * t)
+        y = 0.8 * np.sin(w * t) * np.cos(w * t)
+        z = 1.0 + 0.3 * np.sin(0.5 * w * t) 
 
         # previous sample
-        x_prev = 1.5 * np.sin(w * (t - self.dt))
-        y_prev = 1.5 * np.sin(w * (t - self.dt)) * np.cos(w * (t - self.dt))
-        z_prev = 1.0 + 0.3 * np.sin(0.5 * w * (t - self.dt)) - 0.5
+        x_prev = 0.8 * np.sin(w * (t - self.dt))
+        y_prev = 0.8 * np.sin(w * (t - self.dt)) * np.cos(w * (t - self.dt))
+        z_prev = 1.0 + 0.3 * np.sin(0.5 * w * (t - self.dt)) 
 
         dx = (x - x_prev) / self.dt
         dy = (y - y_prev) / self.dt

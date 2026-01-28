@@ -141,8 +141,8 @@ class Bebop:
             return
 
 
-        gains1 = [4, 4, 3, 1.5,
-                    0.6, 0.6, 1.8, 1.2,
+        gains1 = [4, 4, 2.5, 1.5,
+                    0.42, 0.42, 1.2, 1.2,
                     0.98, 1.1, 1, 1.5]
         gains2 = [1.2, 1.2, 3, 1.5,
                     1.0, 1.0, 1.8, 1.2,
@@ -194,7 +194,16 @@ class Bebop:
         # Compensador dinâmico
         Udw = np.linalg.inv(F @ Ku) @ (dUcw + Ksd @ (Ucw - dX) + Kv @ dX)
 
+        error_threshold = 0.3  
+        small_error = np.linalg.norm(Xtil[0:3]) < error_threshold
 
+        if small_error:
+            self.time_in_small_error += self.dt
+        else:
+            self.time_in_small_error = 0.0
+        
+        if self.time_in_small_error > 3.0 and small_error< 0.3:
+            Udw[0:2] = Udw[0:2] *1.3
         
         # Comandos enviados ao Bebop 2
         self.pSC.Ud[0:3] = Udw[0:3]

@@ -44,7 +44,7 @@ public:
 
         // ------------------- Suscripciones -------------------
         sub_odom_ = this->create_subscription<nav_msgs::msg::Odometry>(
-            "/bebop/odom", 10,
+            "/odometry/filtered", 10,
             std::bind(&TopicLogger::odomCallback, this, std::placeholders::_1));
 
         sub_cmd_ = this->create_subscription<geometry_msgs::msg::Twist>(

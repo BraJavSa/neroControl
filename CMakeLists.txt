@@ -192,10 +192,12 @@ install(PROGRAMS
   nero_drone/controlador.py
   nero_drone/pre_controlador.py
   nero_drone/sim.py
+  nero_drone/sim120.py
   nero_drone/tf_to_gazebo.py
   nero_drone/altitude.py
   nero_drone/altitude_sim.py
   nero_drone/initial_frame.py
+  nero_drone/pos_controlador.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
