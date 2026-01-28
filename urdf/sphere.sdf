@@ -1,0 +1,21 @@
+<?xml version="1.0" ?>
+<sdf version="1.10">
+  <model name="sphere_tf">
+    <pose>0 0 0.3 0 0 0</pose>
+
+    <link name="link">
+      <visual name="visual">
+        <geometry>
+          <sphere><radius>0.1</radius></sphere>
+        </geometry>
+        <material>
+          <ambient>1 0 0 1</ambient>
+          <diffuse>1 0 0 1</diffuse>
+        </material>
+      </visual>
+
+      <gravity>0</gravity>
+      <kinematic>true</kinematic>
+    </link>
+  </model>
+</sdf>

@@ -142,6 +142,20 @@ ament_target_dependencies(safe_bebop_republisher rclcpp geometry_msgs)
 add_executable(isfly src/isfly.cpp)
 ament_target_dependencies(isfly rclcpp std_msgs)
 
+add_executable(tf_odom_to_map src/tf_odom_map.cpp)
+
+ament_target_dependencies(tf_odom_to_map
+  rclcpp
+  tf2_ros
+  geometry_msgs
+)
+
+
+
+add_executable(bebop_odom_fusion src/bebop_odom_fusion.cpp)
+ament_target_dependencies(bebop_odom_fusion rclcpp nav_msgs geometry_msgs sensor_msgs)
+
+
 # ---------------- Install ----------------
 install(TARGETS
   Joy2Cmd
@@ -160,6 +174,8 @@ install(TARGETS
   bebop_odometry
   ibvs
   tag_pos
+  tf_odom_to_map
+  bebop_odom_fusion
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -177,6 +193,8 @@ install(PROGRAMS
   nero_drone/pre_controlador.py
   nero_drone/sim.py
   nero_drone/tf_to_gazebo.py
+  nero_drone/altitude.py
+  nero_drone/initial_frame.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

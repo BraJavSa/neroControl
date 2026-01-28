@@ -9,6 +9,8 @@ def generate_launch_description():
 
     urdf_file = os.path.join(pkg_share, 'urdf', 'bebop2.urdf')
     rviz_config = os.path.join(pkg_share, 'others', 'bebop2_sim.rviz')
+    ekf_config = os.path.join(pkg_share, 'config', 'bebop_ekf.yaml')
+
 
     return LaunchDescription([
 
@@ -20,12 +22,26 @@ def generate_launch_description():
             output='screen'
         ),
 
-        # === NODOS TUYOS ===
         Node(
             package='nero_drone',
             executable='safety_watchdog',
             name='safety_watchdog',
             output='screen'
+        ),
+
+        Node(
+            package='nero_drone',
+            executable='tf_odom_to_map',
+            name='tf_odom_to_map',
+            output='screen'
+        ),
+
+
+        Node(
+            package='nero_drone',
+            executable='altitude.py',
+            name='altitude_bridge',
+            output='screen',
         ),
 
         Node(
@@ -50,13 +66,13 @@ def generate_launch_description():
         ),
 
         Node(
-            package='nero_drone',
-            executable='tf_cam',
-            name='tf_cam',
-            output='screen'
+            package='robot_localization',
+            executable='ekf_node',
+            name='bebop_ekf',
+            output='screen',
+            parameters=[ekf_config]
         ),
 
-        # === URDF ===
         Node(
             package='robot_state_publisher',
             executable='robot_state_publisher',
@@ -65,12 +81,24 @@ def generate_launch_description():
             parameters=[{'robot_description': open(urdf_file).read()}]
         ),
 
-        # === RVIZ ===
+        Node(
+            package='nero_drone',
+            executable='tf_cam',
+            name='tf_cam',
+            output='screen'
+        ),
+
+        Node(
+            package='nero_drone',
+            executable='initial_frame.py',
+            name='initial_frame',
+            output='screen'
+        ),
         Node(
             package='rviz2',
             executable='rviz2',
             arguments=['-d', rviz_config],
             output='screen'
         ),
-
+        
     ])

@@ -1,6 +1,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/twist.hpp>
 #include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/float64_multi_array.hpp>
 #include <chrono>
 
 using namespace std::chrono_literals;
@@ -10,112 +11,151 @@ public:
   SafetyWatchdog()
   : Node("safety_watchdog"),
     last_cmd_time_(this->now()),
-    timeout_(0.2),
+    last_ref_time_(this->now()),
+    timeout_(0.2),          // 5 Hz
     stopped_(false),
-    flying_(false),
-    recovered_(false)
+    flying_(false)
   {
     // --- Suscripciones ---
     sub_cmd_ = this->create_subscription<geometry_msgs::msg::Twist>(
       "/safe_bebop/cmd_vel", 10,
       std::bind(&SafetyWatchdog::cmdCallback, this, std::placeholders::_1));
 
-    // Nuevo: escucha estado booleano de vuelo
+    sub_ref_ = this->create_subscription<std_msgs::msg::Float64MultiArray>(
+      "/bebop/ref_vec", 10,
+      std::bind(&SafetyWatchdog::refCallback, this, std::placeholders::_1));
+
     sub_is_flying_ = this->create_subscription<std_msgs::msg::Bool>(
       "/bebop/is_flying", 10,
       std::bind(&SafetyWatchdog::isFlyingCallback, this, std::placeholders::_1));
 
-    // Publicador de comandos finales
+    // Publicador final hacia el dron
     cmd_pub_ = this->create_publisher<geometry_msgs::msg::Twist>("/bebop/cmd_vel", 10);
-    
-    // Timer de verificación
-    timer_ = this->create_wall_timer(40ms, std::bind(&SafetyWatchdog::checkTimeout, this));
 
-    RCLCPP_INFO(this->get_logger(),
-                "SafetyWatchdog iniciado (timeout = %.2f s). Esperando flag /bebop/is_flying.",
-                timeout_);
+    // Timer de verificación (50 ms → 20 Hz)
+    timer_ = this->create_wall_timer(50ms, std::bind(&SafetyWatchdog::checkTimeout, this));
+
+    RCLCPP_INFO(this->get_logger(), "SafetyWatchdog iniciado (timeout = %.2f s).", timeout_);
   }
 
 private:
-  // === CALLBACKS ===
+
+  // ============================================================
+  // CALLBACKS
+  // ============================================================
+
   void isFlyingCallback(const std_msgs::msg::Bool::SharedPtr msg) {
     bool prev = flying_;
     flying_ = msg->data;
 
     if (flying_ && !prev) {
-      RCLCPP_INFO(this->get_logger(), "Flag is_flying TRUE — watchdog activado.");
+      RCLCPP_INFO(this->get_logger(), "is_flying TRUE — watchdog activado.");
       last_cmd_time_ = this->now();
+      last_ref_time_ = this->now();
       stopped_ = false;
-      recovered_ = false;
     }
     else if (!flying_ && prev) {
-      RCLCPP_INFO(this->get_logger(), "Flag is_flying FALSE — watchdog desactivado.");
+      RCLCPP_INFO(this->get_logger(), "is_flying FALSE — watchdog desactivado.");
       stopped_ = false;
-      recovered_ = false;
       publishZero();
     }
   }
 
   void cmdCallback(const geometry_msgs::msg::Twist::SharedPtr msg) {
-    if (!flying_) return;  // ignora si no está volando
+    if (!flying_) return;
 
     last_cmd_time_ = this->now();
 
-    // Si estaba detenido por timeout y ahora volvió a recibir comandos
-    if (stopped_) {
-      stopped_ = false;
-      recovered_ = true;
-      RCLCPP_INFO(this->get_logger(), "Comandos restaurados — watchdog reactivado.");
-    } else {
-      recovered_ = false;
+    // NO DESACTIVAR STOP MODE AQUÍ
+    if (!stopped_) {
+      cmd_pub_->publish(*msg);
     }
-
-    cmd_pub_->publish(*msg);
   }
 
-  // === FUNCIÓN DE MONITOREO ===
+  void refCallback(const std_msgs::msg::Float64MultiArray::SharedPtr msg) {
+    if (!flying_) return;
+
+    if (msg->data.empty()) {
+      RCLCPP_WARN(this->get_logger(), "Referencia vacía recibida → ignorada.");
+      return;
+    }
+
+    last_ref_time_ = this->now();
+
+    // NO DESACTIVAR STOP MODE AQUÍ
+  }
+
+  // ============================================================
+  // MONITOREO
+  // ============================================================
+
   void checkTimeout() {
     if (!flying_) return;
 
-    double elapsed = (this->now() - last_cmd_time_).seconds();
+    double dt_cmd = (this->now() - last_cmd_time_).seconds();
+    double dt_ref = (this->now() - last_ref_time_).seconds();
 
-    if (elapsed > timeout_) {
-      if (!stopped_) {
-        publishZero();
-        stopped_ = true;
-        recovered_ = false;
-        RCLCPP_WARN(this->get_logger(),
-                    "Timeout: no cmd_vel recibido por %.3f s → enviando STOP", elapsed);
-      } else {
-        publishZero();  // sigue enviando stop
-      }
+    bool cmd_ok = dt_cmd <= timeout_;
+    bool ref_ok = dt_ref <= timeout_;
+
+    bool must_stop = !(cmd_ok && ref_ok);
+
+    // --- Entrando a STOP MODE ---
+    if (must_stop && !stopped_) {
+      stopped_ = true;
+
+      if (!cmd_ok && !ref_ok)
+        RCLCPP_WARN(this->get_logger(), "Timeout doble → STOP MODE");
+      else if (!cmd_ok)
+        RCLCPP_WARN(this->get_logger(), "Timeout cmd_vel → STOP MODE");
+      else
+        RCLCPP_WARN(this->get_logger(), "Timeout ref_vec → STOP MODE");
+    }
+
+    // --- Mantener STOP MODE continuo (20 Hz) ---
+    if (must_stop) {
+      publishZero();
+      return;
+    }
+
+    // --- Saliendo de STOP MODE ---
+    if (stopped_ && !must_stop) {
+      stopped_ = false;
+      RCLCPP_INFO(this->get_logger(), "Ambos flujos restaurados — saliendo de STOP MODE.");
     }
   }
 
-  // === FUNCIONES AUXILIARES ===
+  // ============================================================
+  // AUXILIAR
+  // ============================================================
+
   void publishZero() {
     geometry_msgs::msg::Twist stop;
     stop.linear.x = stop.linear.y = stop.linear.z = stop.angular.z = 0.0;
     cmd_pub_->publish(stop);
   }
 
-  // --- ROS interfaces ---
+  // ============================================================
+  // ROS interfaces
+  // ============================================================
+
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr sub_cmd_;
+  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr sub_ref_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr sub_is_flying_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
 
-  // --- Estado interno ---
   rclcpp::Time last_cmd_time_;
+  rclcpp::Time last_ref_time_;
   double timeout_;
   bool stopped_;
   bool flying_;
-  bool recovered_;
 };
 
-// ============================================================================
+
+// ============================================================
 // MAIN
-// ============================================================================
+// ============================================================
 int main(int argc, char **argv) {
   rclcpp::init(argc, argv);
   rclcpp::spin(std::make_shared<SafetyWatchdog>());

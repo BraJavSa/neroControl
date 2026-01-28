@@ -7,8 +7,23 @@ import torch
 # ======================
 
 device = torch.device("cpu")
-DT = 1.0 / 30.0
+
 T_TOTAL = 40.0
+
+# Frecuencias
+BASE_HZ  = 150.0
+DT_BASE  = 1.0 / BASE_HZ
+
+SIM_DIV  = 3     # 150/3  = 50 Hz dinámica
+CTRL_DIV = 5     # 150/5  = 30 Hz control
+ODOM_DIV = 30    # 150/30 = 5 Hz odometría
+
+DT_SIM   = SIM_DIV  * DT_BASE   # 1/50
+DT_CTRL  = CTRL_DIV * DT_BASE   # 1/30
+DT_ODOM  = ODOM_DIV * DT_BASE   # 1/5
+
+STEPS = int(T_TOTAL * BASE_HZ)
+
 OMEGA = 2.0 * math.pi / T_TOTAL
 U_SAT = 1.0  # saturación de comandos
 
@@ -53,7 +68,7 @@ def rotation_F(yaw: torch.Tensor) -> torch.Tensor:
 
 
 # ======================
-# Trayectoria de referencia (30 Hz)
+# Trayectoria de referencia (continua, evaluada en t)
 # ======================
 
 def ref_trajectory(t: torch.Tensor):
@@ -81,10 +96,15 @@ def ref_trajectory(t: torch.Tensor):
 
 
 # ======================
-# Dinámica del dron
+# Dinámica del dron (50 Hz)
 # ======================
 
 def dynamics_step(x, xdot, u, dt):
+    """
+    x:    [4] (x, y, z, yaw)
+    xdot: [4] (vx, vy, vz, wyaw)
+    u:    [4] (u_x, u_y, u_z, u_yaw)
+    """
     yaw = x[3]
     F = rotation_F(yaw)
     xddot = F @ (Ku @ u) - (Kv @ xdot)
@@ -95,103 +115,132 @@ def dynamics_step(x, xdot, u, dt):
 
 
 # ======================
-# Medición de odometría
+# Medición de odometría (5 Hz, como en tu nodo)
 # ======================
 
 def compute_odom_from_state(x, xdot):
+    # En tu simulador real, odometría ya es (x, xdot) sin ruido
     return x.clone(), xdot.clone()
 
 
 # ======================
-# Controlador inverso
+# Controlador inverso (30 Hz)
 # ======================
 
-def inverse_dynamic_controller(X_meas, dX_meas, Xd, dXd, gains, Ucw_prev, dt):
-
+def inverse_dynamic_controller(X_meas, dX_meas, Xd, dXd, gains, Ucw_prev, dt_ctrl):
+    """
+    gains: [12] = [Ksp(4), Ksd(4), Kp(4)]
+    """
     g = gains
     Ksp = torch.diag(g[0:4])
     Ksd = torch.diag(g[4:8])
     Kp  = torch.diag(g[8:12])
 
-    X = X_meas
+    X  = X_meas
     dX = dX_meas
 
+    # error en espacio de estados
     Xtil_raw = Xd - X
-    yaw_err = wrap_angle(Xtil_raw[3])
+    yaw_err  = wrap_angle(Xtil_raw[3])
     Xtil = torch.stack([Xtil_raw[0], Xtil_raw[1], Xtil_raw[2], yaw_err])
 
+    # ley en espacio "world"
     Ucw = dXd + Ksp @ torch.tanh(Kp @ Xtil)
-    dUcw = (Ucw - Ucw_prev) / dt
 
+    # derivada del comando
+    dUcw = (Ucw - Ucw_prev) / dt_ctrl
+
+    # inversión dinámica
     yaw = X[3]
     F = rotation_F(yaw)
     M = F @ Ku
     rhs = dUcw + Ksd @ (Ucw - dX) + Kv @ dX
     Udw = torch.linalg.solve(M, rhs)
 
+    # empaque a formato 6D (tipo cmd_vel extendido)
     Ud = torch.zeros(6, dtype=torch.float32, device=device)
     Ud[0:3] = Udw[0:3]
-    Ud[5] = Udw[3]
+    Ud[5]   = Udw[3]
 
     return Ud, Ucw
 
 
 # ======================
-# Simulación + Costo suave (overshoot reducido)
+# Simulación + Costo (prioriza tracking)
 # ======================
 
 def simulate_episode(gains: torch.Tensor) -> torch.Tensor:
 
-    steps = int(T_TOTAL / DT)
-    odom_period = 6  # 30 Hz -> 5 Hz
+    x    = torch.zeros(4, device=device)  # [x, y, z, yaw]
+    xdot = torch.zeros(4, device=device)  # [vx, vy, vz, wyaw]
 
-    x = torch.zeros(4, device=device)
-    xdot = torch.zeros(4, device=device)
-
+    # odometría inicial
     X_meas, dX_meas = compute_odom_from_state(x, xdot)
+
     Ucw_prev = torch.zeros(4, device=device)
+    u_cmd    = torch.zeros(6, device=device)  # último comando de control aplicado
 
     cost = torch.tensor(0.0, device=device)
     n_odom_samples = 0
 
-    for k in range(steps):
-        t = torch.tensor(k * DT, device=device)
+    # pesos de costo (priorizar tracking)
+    w_track_pos = 1.0
+    w_track_yaw = 0.5
+    w_vel       = 0.05
+    w_u         = 0.002
+    w_acc       = 0.002
+
+    for k in range(STEPS):
+        t = torch.tensor(k * DT_BASE, dtype=torch.float32, device=device)
+
+        # referencia continua en tiempo t
         Xd, dXd = ref_trajectory(t)
 
-        if k % odom_period == 0:
+        # --- ODOMETRÍA + COSTO (5 Hz) ---
+        if k % ODOM_DIV == 0:
             X_meas, dX_meas = compute_odom_from_state(x, xdot)
 
             pos_err = Xd[0:3] - X_meas[0:3]
             yaw_err = wrap_angle(Xd[3] - X_meas[3])
 
-            loss_track = (pos_err**2).sum() + 0.5*(yaw_err**2)
-            loss_vel = 0.1 * (dX_meas[0:3]**2).sum()
+            loss_track = w_track_pos * (pos_err**2).sum() + \
+                         w_track_yaw * (yaw_err**2)
 
-            loss = loss_track + loss_vel
-            cost = cost + loss
+            loss_vel = w_vel * (dX_meas[0:3]**2).sum()
+
+            cost = cost + (loss_track + loss_vel)
             n_odom_samples += 1
 
-        Ud, Ucw_prev = inverse_dynamic_controller(
-            X_meas, dX_meas, Xd, dXd, gains, Ucw_prev, DT
-        )
+        # --- CONTROL (30 Hz) ---
+        if k % CTRL_DIV == 0:
+            Ud, Ucw_prev = inverse_dynamic_controller(
+                X_meas, dX_meas, Xd, dXd, gains, Ucw_prev, DT_CTRL
+            )
 
-        Ud_clipped = torch.clamp(Ud, -U_SAT, U_SAT)
+            Ud_clipped = torch.clamp(Ud, -U_SAT, U_SAT)
+            u_cmd = Ud_clipped
 
-        cost = cost + 0.01*(Ud_clipped[0:3]**2).sum()
+            # penalizar energía de control (suave)
+            cost = cost + w_u * (Ud_clipped[0:3]**2).sum()
 
-        yaw = x[3]
-        F = rotation_F(yaw)
-        xddot_proxy = F @ (Ku @ Ud_clipped[0:4]) - Kv @ xdot
-        cost = cost + 0.005*(xddot_proxy[0:3]**2).sum()
+        # --- DINÁMICA (50 Hz) ---
+        if k % SIM_DIV == 0:
+            # mando que llega al modelo
+            u_dyn = torch.stack([
+                u_cmd[0],
+                u_cmd[1],
+                u_cmd[2],
+                u_cmd[5]
+            ])
 
-        u_dyn = torch.stack([
-            Ud_clipped[0],
-            Ud_clipped[1],
-            Ud_clipped[2],
-            Ud_clipped[5]
-        ])
+            # penalizar aceleraciones fuertes (aprox)
+            yaw = x[3]
+            F = rotation_F(yaw)
+            xddot_proxy = F @ (Ku @ u_dyn) - Kv @ xdot
+            cost = cost + w_acc * (xddot_proxy[0:3]**2).sum()
 
-        x, xdot = dynamics_step(x, xdot, u_dyn, DT)
+            # integrar dinámica
+            x, xdot = dynamics_step(x, xdot, u_dyn, DT_SIM)
 
     if n_odom_samples > 0:
         cost = cost / n_odom_samples
@@ -205,10 +254,23 @@ def simulate_episode(gains: torch.Tensor) -> torch.Tensor:
 
 def main():
 
-    init_gains = torch.tensor([0.2948657274246216, 0.282520592212677, 0.33964332938194275, 2.4078164100646973, 4.946599960327148, 4.323536396026611, 6.013118267059326, 10.796932220458984, 0.29646456241607666, 0.28467491269111633, 3.555035352706909, 1.9480745792388916] dtype=torch.float32, device=device)
+    init_gains = torch.tensor([
+        0.2948657274246216,
+        0.282520592212677,
+        0.33964332938194275,
+        2.4078164100646973,
+        4.946599960327148,
+        4.323536396026611,
+        6.013118267059326,
+        10.796932220458984,
+        0.29646456241607666,
+        0.28467491269111633,
+        3.555035352706909,
+        1.9480745792388916
+    ], dtype=torch.float32, device=device)
 
     gains = torch.nn.Parameter(init_gains.clone())
-    optimizer = torch.optim.Adam([gains], lr=1e-2)
+    optimizer = torch.optim.Adam([gains], lr=1e-1)
 
     n_epochs = 200
 
@@ -220,8 +282,9 @@ def main():
 
         if (epoch + 1) % 10 == 0 or epoch == 0:
             print("Epoch =", epoch+1)
-            print("Cost =", float(cost))
+            print("Cost  =", float(cost))
             print("Gains =", gains.detach().cpu().tolist())
+            print("-" * 40)
 
     print("# --- Optimización terminada ---")
     print("Gains_opt =", gains.detach().cpu().tolist())

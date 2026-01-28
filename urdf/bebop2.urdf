@@ -4,7 +4,7 @@
   <!-- ========================= -->
   <!-- Cuerpo principal -->
   <!-- ========================= -->
-  <link name="base_link">
+  <link name="base_link_ekf">
     <visual>
       <geometry>
         <!-- Ajusta el scale si el mesh está en metros reales, déjalo en 1 1 1 -->
@@ -29,7 +29,7 @@
     </visual>
   </link>
   <joint name="joint_propeller_front_right" type="fixed">
-    <parent link="base_link"/>
+    <parent link="base_link_ekf"/>
     <child link="propeller_front_right"/>
     <origin xyz="0.08440513 -0.09784210 0.03" rpy="0 0 0"/>
   </joint>
@@ -46,7 +46,7 @@
     </visual>
   </link>
   <joint name="joint_propeller_front_left" type="fixed">
-    <parent link="base_link"/>
+    <parent link="base_link_ekf"/>
     <child link="propeller_front_left"/>
     <origin xyz="0.08440513 0.09784210 0.03" rpy="0 0 0"/>
   </joint>
@@ -63,7 +63,7 @@
     </visual>
   </link>
   <joint name="joint_propeller_back_right" type="fixed">
-    <parent link="base_link"/>
+    <parent link="base_link_ekf"/>
     <child link="propeller_back_right"/>
     <origin xyz="-0.06853580 -0.09784210 0.03" rpy="0 0 0"/>
   </joint>
@@ -80,7 +80,7 @@
     </visual>
   </link>
   <joint name="joint_propeller_back_left" type="fixed">
-    <parent link="base_link"/>
+    <parent link="base_link_ekf"/>
     <child link="propeller_back_left"/>
     <origin xyz="-0.06853580 0.09784210 0.03" rpy="0 0 0"/>
   </joint>

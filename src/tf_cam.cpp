@@ -1,4 +1,4 @@
-// CameraTFWithGimbal: ROS2 node that publishes three TFs (base_link→absolute_cam_link, base_link→camera_link, camera_link→camera_gimbal)
+// CameraTFWithGimbal: ROS2 node that publishes three TFs (base_link_ekf→absolute_cam_link, base_link_ekf→camera_link, camera_link→camera_gimbal)
 // and a boolean topic /bebop/camera_moving that indicates when the camera is moving, waiting, or within 2 seconds after completing movement.
 // Author: Brayan Saldarriaga-Mesa (bsaldarriaga@inaut.unsj.edu.ar), in collaboration with UFV.
 
@@ -50,7 +50,7 @@ public:
         last_update_time_ = this->now();
         wait_start_time_ = this->now();
 
-        RCLCPP_INFO(this->get_logger(), "CameraTFWithGimbal started using TF from base_link.");
+        RCLCPP_INFO(this->get_logger(), "CameraTFWithGimbal started using TF from base_link_ekf.");
     }
 
 private:
@@ -96,7 +96,7 @@ private:
         // Obtener orientación del dron desde TF
         geometry_msgs::msg::TransformStamped tf_base;
         try {
-            tf_base = tf_buffer_->lookupTransform("odom", "base_link", tf2::TimePointZero);
+            tf_base = tf_buffer_->lookupTransform("odom", "base_link_ekf", tf2::TimePointZero);
         } catch (tf2::TransformException &ex) {
             RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "TF lookup failed: %s", ex.what());
             return;
@@ -140,7 +140,7 @@ private:
     void publish_absolute_tf() {
         geometry_msgs::msg::TransformStamped tf_abs;
         tf_abs.header.stamp = this->get_clock()->now();
-        tf_abs.header.frame_id = "base_link";
+        tf_abs.header.frame_id = "base_link_ekf";
         tf_abs.child_frame_id = "absolute_cam_link";
         tf_abs.transform.translation.x = 0.09;
         tf_abs.transform.translation.y = 0.0;
@@ -164,7 +164,7 @@ private:
     void publish_camera_tf(double pitch_angle) {
         geometry_msgs::msg::TransformStamped tf_cam;
         tf_cam.header.stamp = this->get_clock()->now();
-        tf_cam.header.frame_id = "base_link";
+        tf_cam.header.frame_id = "base_link_ekf";
         tf_cam.child_frame_id = "camera_link";
         tf_cam.transform.translation.x = 0.09;
         tf_cam.transform.translation.y = 0.0;
