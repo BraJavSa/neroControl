@@ -44,7 +44,7 @@ class SC:
 class Bebop:
     def __init__(self, node: Node):
         self.node = node
-        self.dt = 0.1  
+        self.dt = 1/10  
         self.pPos = Position()
         self.pPar = Parameters()
         self.pSC = SC()
@@ -141,10 +141,14 @@ class Bebop:
             return
 
 
-        gains = [1.2, 1.2, 3, 1.5,
+        gains1 = [4, 4, 3, 1.5,
+                    0.8, 1.0, 1.8, 1.2,
+                    0.98, 1.1, 1, 1.5]
+        gains2 = [1.2, 1.2, 3, 1.5,
                     1.0, 1.0, 1.8, 1.2,
                     1.7, 1.7, 1, 1.5]
-        g = np.array(gains)
+        gains = [1.2681096076965332, 1.269900369644165, 3.4579620361328125, 1.8733962774276733, 1.2664785385131836, 1.2695072889328003, 2.2603447437286377, 1.574706792831421, 2.0619218349456787, 2.0625693798065186, 1.2753105163574219, 1.8690264225006104]
+        g = np.array(gains2)
 
         # Modelo
         Ku = np.diag([self.pPar.Model_simp[0], self.pPar.Model_simp[2],

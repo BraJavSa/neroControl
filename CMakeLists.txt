@@ -194,6 +194,7 @@ install(PROGRAMS
   nero_drone/sim.py
   nero_drone/tf_to_gazebo.py
   nero_drone/altitude.py
+  nero_drone/altitude_sim.py
   nero_drone/initial_frame.py
   DESTINATION lib/${PROJECT_NAME}
 )

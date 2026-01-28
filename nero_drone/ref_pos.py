@@ -27,18 +27,17 @@ class RefPublisher(Node):
         self.t0 = time.time()
         self.idx = 0
 
-        # cube points (IN INITIAL_FRAME)
         L = 1.5
         self.points = np.array([
-            [0.0, 0.0, 1.5],
-            [ L/2,  0.0, 1.5],
-            [-L/2,  0.0, 1.5],
-            [-L/2, 0.0, 1.5],
-            [ L/2, 0.0, 1.5],
+            [0.0, 0.0, 1.5],        # Centro
+            [L/2, L/2, 1.7],        # Esquina superior derecha
+            [-L/2, L/2, 1.4],       # Esquina superior izquierda
+            [-L/2, -L/2, 1.8],      # Inferior izquierda
+            [L/2, -L/2, 1.2]        # Inferior derecha
         ])
 
-        # yaw angles (IN INITIAL_FRAME)
-        self.yaws = np.deg2rad([0, 0, 0, 0, 0])
+        # --------------------- Yaw asociados (en radianes) ---------------------
+        self.yaws = np.deg2rad([0, 50, 150, 180, 210])
 
         # timer
         self.timer = self.create_timer(self.dt, self.timer_cb)

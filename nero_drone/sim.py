@@ -27,6 +27,33 @@ class DroneSimulator(Node):
         self.xdot = np.zeros(4)
         self.u = np.zeros(4)
 
+        # Modelo simplificado identificado:
+        # [Ku_x, Kv_x, Ku_y, Kv_y, Ku_z, Kv_z, Ku_yaw, Kv_yaw]
+        self.model_simp = np.array([
+            0.8417, 0.18227,
+            0.8354, 0.17095,
+            3.966,  4.001,
+            9.8524, 4.7295
+        ])
+
+        # Matrices Ku y Kv (diagonales)
+        self.Ku = np.diag([
+            self.model_simp[0],
+            self.model_simp[2],
+            self.model_simp[4],
+            self.model_simp[6],
+        ])
+
+        self.Kv = np.diag([
+            self.model_simp[1],
+            self.model_simp[3],
+            self.model_simp[5],
+            self.model_simp[7],
+        ])
+
+        # Paso de integración de la dinámica (50 Hz)
+        self.dt_dyn = 1.0 / 50.0
+
         # Máquina de estados
         # IDLE: en el suelo, sin dinámica
         # TAKING_OFF: subiendo directo hasta z_target_takeoff
@@ -42,6 +69,9 @@ class DroneSimulator(Node):
         # Control
         self.last_cmd = None
         self.cmd_counter = 0
+
+        # Máxima inclinación (pitch/roll) en radianes
+        self.max_tilt = math.radians(5.0)
 
         # Publishers
         self.pub_xy = self.create_publisher(PointStamped, "/bebop/position", 10)
@@ -67,15 +97,20 @@ class DroneSimulator(Node):
             "(IMU 30 Hz, XY 15 Hz, Z 10 Hz, dynamics 50 Hz, odom 5 Hz)"
         )
 
+        # Almacenamiento para odometría derivada
+        self.last_odom_x = None
+        self.last_odom_y = None
+        self.last_odom_z = None
+        self.last_odom_yaw = None
+        self.last_odom_stamp = None
+
     # ------------------------------
     # CALLBACKS
     # ------------------------------
 
     def cmd_cb(self, msg: Twist):
-        # Solo aceptar comandos a 10 Hz → cada 15 ticks y solo en FLYING
-        if self.mode == "FLYING" and self.cmd_counter >= 15:
-            self.last_cmd = msg
-            self.cmd_counter = 0
+        self.last_cmd = msg
+        self.cmd_counter = 0
 
     def takeoff_cb(self, _):
         if self.mode in ["IDLE", "LANDING"]:
@@ -146,9 +181,11 @@ class DroneSimulator(Node):
     # ------------------------------
 
     def dynamics_step(self):
+        # yaw actual
         yaw = self.x[3]
         c, s = math.cos(yaw), math.sin(yaw)
 
+        # Rotación mundo<-cuerpo (solo en x-y, resto identidad)
         F = np.array([
             [c, -s, 0, 0],
             [s,  c, 0, 0],
@@ -156,10 +193,15 @@ class DroneSimulator(Node):
             [0,  0, 0, 1],
         ])
 
-        xddot = F @ self.u - 0.1 * self.xdot
-        self.xdot += xddot * (1.0 / 50.0)
-        self.x += self.xdot * (1.0 / 50.0)
+        # Modelo continuo:
+        #   xddot^w = F Ku u^b - Kv xdot^w
+        xddot = F @ (self.Ku @ self.u) - self.Kv @ self.xdot
 
+        # Integración explícita (Euler)
+        self.xdot += xddot * self.dt_dyn
+        self.x += self.xdot * self.dt_dyn
+
+        # Piso en z = 0
         if self.x[2] < 0.0:
             self.x[2] = 0.0
             self.xdot[2] = 0.0
@@ -186,21 +228,27 @@ class DroneSimulator(Node):
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = "base_link"
 
-        roll = 0.0
-        pitch = 0.0
+        # Pitch y roll derivados de las entradas normalizadas [-1, 1]
+        roll = float(self.u[1]) * self.max_tilt   # lateral (y)
+        pitch = float(self.u[0]) * self.max_tilt  # longitudinal (x)
         yaw = self.x[3]
 
         qx, qy, qz, qw = quaternion_from_euler(roll, pitch, yaw)
         msg.orientation.x = qx
-        msg.orientation.y = qy
-        msg.orientation.z = qz
+        msg.orientation.y = -qy
+        msg.orientation.z = -qz
         msg.orientation.w = qw
 
         self.pub_imu.publish(msg)
 
     def publish_tf(self):
         x, y, z, yaw = self.x
-        qx, qy, qz, qw = quaternion_from_euler(0.0, 0.0, yaw)
+
+        # Pitch y roll derivados de las entradas normalizadas
+        roll = float(self.u[1]) * self.max_tilt
+        pitch = float(self.u[0]) * self.max_tilt
+
+        qx, qy, qz, qw = quaternion_from_euler(roll, pitch, yaw)
 
         t = TransformStamped()
         t.header.stamp = self.get_clock().now().to_msg()
@@ -216,26 +264,40 @@ class DroneSimulator(Node):
 
         self.tf_br.sendTransform(t)
 
+    # ------------------------------
+    # ODOMETRÍA (velocidades por diferencia)
+    # ------------------------------
+
     def publish_odom(self):
+        now = self.get_clock().now()
+        stamp = now.to_msg()
+
+        x, y, z, yaw = self.x
+        vx, vy, vz, wz = self.xdot
+
+        # Pitch y roll derivados de las entradas normalizadas
+        roll = float(self.u[1]) * self.max_tilt
+        pitch = float(self.u[0]) * self.max_tilt
+
         msg = Odometry()
-        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.stamp = stamp
         msg.header.frame_id = "odom"
         msg.child_frame_id = "base_link"
 
-        msg.pose.pose.position.x = float(self.x[0])
-        msg.pose.pose.position.y = float(self.x[1])
-        msg.pose.pose.position.z = float(self.x[2])
+        msg.pose.pose.position.x = float(x)
+        msg.pose.pose.position.y = float(y)
+        msg.pose.pose.position.z = float(z)
 
-        qx, qy, qz, qw = quaternion_from_euler(0.0, 0.0, self.x[3])
+        qx, qy, qz, qw = quaternion_from_euler(roll, pitch, yaw)
         msg.pose.pose.orientation.x = qx
         msg.pose.pose.orientation.y = qy
         msg.pose.pose.orientation.z = qz
         msg.pose.pose.orientation.w = qw
 
-        msg.twist.twist.linear.x = float(self.xdot[0])
-        msg.twist.twist.linear.y = float(self.xdot[1])
-        msg.twist.twist.linear.z = float(self.xdot[2])
-        msg.twist.twist.angular.z = float(self.xdot[3])
+        msg.twist.twist.linear.x = float(vx)
+        msg.twist.twist.linear.y = float(vy)
+        msg.twist.twist.linear.z = float(vz)
+        msg.twist.twist.angular.z = float(wz)
 
         self.pub_odom.publish(msg)
 

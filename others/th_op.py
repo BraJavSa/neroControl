@@ -1,231 +1,301 @@
 #!/usr/bin/env python3
 import math
+import time
+import numpy as np
 import torch
+from torch.optim import Adam
 
-# ======================
-# Configuración global
-# ======================
+# ============================================================
+# CONFIG
+# ============================================================
 
-device = torch.device("cpu")
-DT = 1.0 / 30.0
-T_TOTAL = 40.0
-OMEGA = 2.0 * math.pi / T_TOTAL
-U_SAT = 1.0  # saturación de comandos
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+DT_MASTER = 1/150
+DT_DYN = 1/50
+DT_REF = 1/30
+DT_CTRL = 1/10
 
-# ======================
-# Parámetros del modelo (como en tu código)
-# ======================
+EPISODE_TIME = 12.0 * 5
+N_STEPS = int(EPISODE_TIME / DT_MASTER)
 
-MODEL_SIMP = torch.tensor([
+W_ERR = 1.0
+W_DU = 0.2
+W_OVERSHOOT = 2.0
+W_TSETTLE = 0.3
+W_SAT = 0.5
+W_OSC = 0.2
+W_YAW_SMOOTH = 0.3
+
+Z_TOL = 0.02
+
+MODEL_SIMP = np.array([
     0.8417, 0.18227,
     0.8354, 0.17095,
     3.966,  4.001,
     9.8524, 4.7295
-], dtype=torch.float32, device=device)
+], dtype=np.float32)
 
-Ku_diag = MODEL_SIMP[[0, 2, 4, 6]]  # [0, 2, 4, 6]
-Kv_diag = MODEL_SIMP[[1, 3, 5, 7]]  # [1, 3, 5, 7]
+Ku_np = np.diag([MODEL_SIMP[0], MODEL_SIMP[2], MODEL_SIMP[4], MODEL_SIMP[6]])
+Kv_np = np.diag([MODEL_SIMP[1], MODEL_SIMP[3], MODEL_SIMP[5], MODEL_SIMP[7]])
 
-Ku = torch.diag(Ku_diag)
-Kv = torch.diag(Kv_diag)
+Ku = torch.tensor(Ku_np, dtype=torch.float32, device=DEVICE)
+Kv = torch.tensor(Kv_np, dtype=torch.float32, device=DEVICE)
 
+BASE_GAINS = np.array([
+    1.2, 1.2, 3.0, 1.5,
+    1.0, 1.0, 1.8, 1.2,
+    1.7, 1.7, 1.0, 1.5
+], dtype=np.float32)
 
-# ======================
-# Utilidades
-# ======================
+DELTA_SCALE = np.array([
+    0.3, 0.3, 0.5, 0.4,
+    0.3, 0.3, 0.5, 0.4,
+    0.4, 0.4, 0.3, 0.4
+], dtype=np.float32)
 
-def wrap_angle(angle: torch.Tensor) -> torch.Tensor:
-    return torch.atan2(torch.sin(angle), torch.cos(angle))
+BASE_GAINS_T = torch.tensor(BASE_GAINS, dtype=torch.float32, device=DEVICE)
+DELTA_SCALE_T = torch.tensor(DELTA_SCALE, dtype=torch.float32, device=DEVICE)
 
+# ============================================================
+# REFERENCIA
+# ============================================================
 
-def rotation_F(yaw: torch.Tensor) -> torch.Tensor:
-    c = torch.cos(yaw)
-    s = torch.sin(yaw)
-    F = torch.zeros(4, 4, dtype=torch.float32, device=device)
-    F[0, 0] = c
-    F[0, 1] = -s
-    F[1, 0] = s
-    F[1, 1] = c
-    F[2, 2] = 1.0
-    F[3, 3] = 1.0
-    return F
-
-
-# ======================
-# NUEVA referencia: poses del cubo (30 Hz)
-# ======================
-
-def ref_cube(t: torch.Tensor):
+def build_reference_points():
     L = 1.5
-    points = torch.tensor([
-        [0.0,   0.0,   1.5],
-        [ L/2,  L/2,   1.7],
-        [-L/2,  L/2,   1.4],
-        [-L/2, -L/2,   1.8],
-        [ L/2, -L/2,   1.2],
-    ], device=device, dtype=torch.float32)
+    points = np.array([
+        [0.0, 0.0, 1.5],
+        [L/2, L/2, 1.7],
+        [-L/2, L/2, 1.4],
+        [-L/2, -L/2, 1.8],
+        [L/2, -L/2, 1.2]
+    ], dtype=np.float32)
+    yaws = np.deg2rad([0, 50, 150, 180, 210]).astype(np.float32)
+    return points, yaws
 
-    yaws = torch.deg2rad(torch.tensor([0, 50, 150, 180, 210],
-                                      device=device, dtype=torch.float32))
+POINTS, YAWS = build_reference_points()
+HOLD_TIME = 12.0
 
-    hold_time = 12.0
-    idx = torch.clamp((t / hold_time).long(), 0, len(points)-1)
-
-    pos = points[idx]
-    yaw = yaws[idx]
-
-    Xd = torch.stack([pos[0], pos[1], pos[2], yaw])
-    dXd = torch.zeros_like(Xd)  # velocidades 0
+def get_ref_at_time(t):
+    idx = int(t // HOLD_TIME)
+    if idx >= len(POINTS):
+        idx = len(POINTS) - 1
+    pos = POINTS[idx]
+    yaw = YAWS[idx]
+    Xd = torch.tensor([pos[0], pos[1], pos[2], yaw], dtype=torch.float32, device=DEVICE)
+    dXd = torch.zeros(4, dtype=torch.float32, device=DEVICE)
     return Xd, dXd
 
+# ============================================================
+# DINÁMICA
+# ============================================================
 
-# ======================
-# Dinámica del dron
-# ======================
-
-def dynamics_step(x: torch.Tensor,
-                  xdot: torch.Tensor,
-                  u: torch.Tensor,
-                  dt: float):
+def dynamics_step(x, xdot, u):
     yaw = x[3]
-    F = rotation_F(yaw)
-    xddot = F @ (Ku @ u) - (Kv @ xdot)
+    c = torch.cos(yaw)
+    s = torch.sin(yaw)
 
-    xdot_new = xdot + xddot * dt
-    x_new = x + xdot_new * dt
-    return x_new, xdot_new
+    zero = torch.tensor(0.0, device=DEVICE)
+    one = torch.tensor(1.0, device=DEVICE)
 
+    F = torch.stack([
+        torch.stack([c,   -s,  zero, zero]),
+        torch.stack([s,    c,  zero, zero]),
+        torch.stack([zero, zero, one,  zero]),
+        torch.stack([zero, zero, zero, one])
+    ])
 
-# ======================
-# Medición de odometría (5 Hz)
-# ======================
+    xddot = F @ (Ku @ u) - Kv @ xdot
+    xdot_new = xdot + xddot * DT_DYN
+    x_new = x + xdot_new * DT_DYN
 
-def compute_odom_from_state(x: torch.Tensor,
-                            xdot: torch.Tensor):
-    X_meas = x.clone()
-    dX_meas = xdot.clone()
-    return X_meas, dX_meas
+    z = torch.clamp(x_new[2], min=0.0)
+    x_new2 = torch.stack([x_new[0], x_new[1], z, x_new[3]])
 
+    return x_new2, xdot_new
 
-# ======================
-# Controlador inverso (Torch)
-# ======================
+# ============================================================
+# CONTROLADOR
+# ============================================================
 
-def inverse_dynamic_controller(X_meas, dX_meas, Xd, dXd, gains, Ucw_prev, dt):
+def controller_step(x, xdot, Xd, dXd, gains, prev_Ur):
+    Ksp = torch.diag(gains[0:4])
+    Ksd = torch.diag(gains[4:8])
+    Kp  = torch.diag(gains[8:12])
 
-    g = gains
-    Ksp = torch.diag(g[0:4])
-    Ksd = torch.diag(g[4:8])
-    Kp  = torch.diag(g[8:12])
+    X = x
+    dX = xdot
 
-    X = X_meas
-    dX = dX_meas
+    base_err = Xd - X
+    yaw_err = base_err[3]
+    wrap = (torch.abs(yaw_err) > math.pi).float()
+    yaw_err_wrapped = yaw_err - 2*math.pi*torch.sign(yaw_err)*wrap
 
-    Xtil_raw = Xd - X
-    yaw_err = wrap_angle(Xtil_raw[3])
-    Xtil = torch.stack([Xtil_raw[0], Xtil_raw[1], Xtil_raw[2], yaw_err])
+    Xtil = torch.stack([base_err[0], base_err[1], base_err[2], yaw_err_wrapped])
 
     Ucw = dXd + Ksp @ torch.tanh(Kp @ Xtil)
-    dUcw = (Ucw - Ucw_prev) / dt
+    dUcw = (Ucw - prev_Ur) / DT_CTRL
+    Ur = Ucw
 
-    yaw = X[3]
-    F = rotation_F(yaw)
+    psi = X[3]
+    c = torch.cos(psi)
+    s = torch.sin(psi)
+    zero = torch.tensor(0.0, device=DEVICE)
+    one = torch.tensor(1.0, device=DEVICE)
+
+    F = torch.stack([
+        torch.stack([c,   -s,  zero, zero]),
+        torch.stack([s,    c,  zero, zero]),
+        torch.stack([zero, zero, one,  zero]),
+        torch.stack([zero, zero, zero, one])
+    ])
+
     M = F @ Ku
-    rhs = dUcw + Ksd @ (Ucw - dX) + Kv @ dX
-    Udw = torch.linalg.solve(M, rhs)
+    Minv = torch.inverse(M)
 
-    Ud = torch.zeros(6, dtype=torch.float32, device=device)
-    Ud[0:3] = Udw[0:3]
-    Ud[5] = Udw[3]
+    Udw = Minv @ (dUcw + Ksd @ (Ucw - dX) + Kv @ dX)
 
-    return Ud, Ucw
+    u_body = torch.stack([
+        torch.clamp(Udw[0], -1.0, 1.0),
+        torch.clamp(Udw[1], -1.0, 1.0),
+        torch.clamp(Udw[2], -1.0, 1.0),
+        torch.clamp(Udw[3], -1.0, 1.0)
+    ])
 
+    return u_body, Ur
 
-# ======================
-# Nueva simulación + costo
-# ======================
+# ============================================================
+# COSTO MEJORADO
+# ============================================================
 
-def simulate_episode(gains: torch.Tensor) -> torch.Tensor:
+def compute_cost(traj_x, traj_xd, traj_u):
+    e = traj_x - traj_xd
+    J_err = (e**2).sum(dim=1).mean()
 
-    steps = int(T_TOTAL / DT)
-    odom_period = 6  # 30 Hz / 5 Hz
+    du = traj_u[1:] - traj_u[:-1]
+    J_du = (du**2).sum(dim=1).mean()
 
-    x = torch.zeros(4, dtype=torch.float32, device=device)
-    xdot = torch.zeros(4, dtype=torch.float32, device=device)
+    z = traj_x[:,2]
+    z_ref = traj_xd[:,2]
+    overshoot = torch.clamp(z - z_ref, min=0.0)
+    J_ov = overshoot.max()
 
-    X_meas, dX_meas = compute_odom_from_state(x, xdot)
-    Ucw_prev = torch.zeros(4, dtype=torch.float32, device=device)
+    ez = torch.abs(z - z_ref)
+    settled = ez < Z_TOL
+    t_settle = EPISODE_TIME
+    for i in range(len(ez)):
+        if settled[i:].all():
+            t_settle = i * DT_MASTER
+            break
+    J_tset = torch.tensor(t_settle / EPISODE_TIME, device=DEVICE)
 
-    cost = torch.tensor(0.0, dtype=torch.float32, device=device)
-    n_odom_samples = 0
+    sat_mask = (torch.abs(traj_u) > 0.9).float()
+    J_sat = sat_mask.mean()
 
-    for k in range(steps):
-        t = torch.tensor(k * DT, dtype=torch.float32, device=device)
+    dx = traj_x[1:] - traj_x[:-1]
+    J_osc = (dx**2).sum(dim=1).mean()
 
-        Xd, dXd = ref_cube(t)
+    yaw = traj_x[:,3]
+    dyaw = yaw[1:] - yaw[:-1]
+    J_yaw = (dyaw**2).mean()
 
-        if k % odom_period == 0:
-            X_meas, dX_meas = compute_odom_from_state(x, xdot)
+    J = (
+        W_ERR * J_err +
+        W_DU * J_du +
+        W_OVERSHOOT * J_ov +
+        W_TSETTLE * J_tset +
+        W_SAT * J_sat +
+        W_OSC * J_osc +
+        W_YAW_SMOOTH * J_yaw
+    )
 
-            pos_err = Xd[0:3] - X_meas[0:3]
-            yaw_err = wrap_angle(Xd[3] - X_meas[3])
+    return J
 
-            loss_track = (pos_err**2).sum() + 0.5*(yaw_err**2)
-            loss_vel = 0.1 * (dX_meas[0:3]**2).sum()
+# ============================================================
+# ROLLOUT
+# ============================================================
 
-            loss = loss_track + loss_vel
-            cost = cost + loss
-            n_odom_samples += 1
+def rollout(theta):
+    gains = BASE_GAINS_T + DELTA_SCALE_T * torch.tanh(theta)
 
-        Ud, Ucw_prev = inverse_dynamic_controller(
-            X_meas, dX_meas, Xd, dXd, gains, Ucw_prev, DT
-        )
+    x = torch.tensor([0.0,0.0,1.2,0.0], dtype=torch.float32, device=DEVICE)
+    xdot = torch.zeros(4, dtype=torch.float32, device=DEVICE)
+    Ur = torch.zeros(4, dtype=torch.float32, device=DEVICE)
+    u_body = torch.zeros(4, dtype=torch.float32, device=DEVICE)
 
-        Ud_clipped = torch.clamp(Ud, -U_SAT, U_SAT)
-        cost = cost + 0.01*(Ud_clipped[0:3]**2).sum()
+    traj_x = []
+    traj_xd = []
+    traj_u = []
 
-        u_dyn = torch.stack([
-            Ud_clipped[0],
-            Ud_clipped[1],
-            Ud_clipped[2],
-            Ud_clipped[5]
-        ])
+    Xd, dXd = get_ref_at_time(0.0)
 
-        x, xdot = dynamics_step(x, xdot, u_dyn, DT)
+    dyn_t = 0.0
+    ref_t = 0.0
+    ctrl_t = 0.0
 
-    if n_odom_samples > 0:
-        cost = cost / n_odom_samples
+    for step in range(N_STEPS):
+        t = step * DT_MASTER
+        dyn_t += DT_MASTER
+        ref_t += DT_MASTER
+        ctrl_t += DT_MASTER
 
-    return cost
+        if ref_t >= DT_REF:
+            Xd, dXd = get_ref_at_time(t)
+            ref_t = 0.0
 
+        if ctrl_t >= DT_CTRL:
+            u_body, Ur = controller_step(x, xdot, Xd, dXd, gains, Ur)
+            ctrl_t = 0.0
 
-# ======================
-# Optimización con Adam
-# ======================
+        if dyn_t >= DT_DYN:
+            x, xdot = dynamics_step(x, xdot, u_body)
+            dyn_t = 0.0
 
-def main():
+        traj_x.append(x)
+        traj_xd.append(Xd)
+        traj_u.append(u_body)
 
-    init_gains = torch.tensor([1.2806, 1.2804, 3.2648, 1.7506, 0.9505, 0.9507, 2.0379, 1.4151, 1.8123, 1.8121, 1.1834, 1.7449], dtype=torch.float32, device=device)
+    traj_x = torch.stack(traj_x)
+    traj_xd = torch.stack(traj_xd)
+    traj_u = torch.stack(traj_u)
 
-    gains = torch.nn.Parameter(init_gains.clone())
-    optimizer = torch.optim.Adam([gains], lr=1e-2)
+    J = compute_cost(traj_x, traj_xd, traj_u)
+    return J, gains
 
-    n_epochs = 200
+# ============================================================
+# TRAIN — OPTIMIZA DELTAS ALREDEDOR DE TUS GANANCIAS
+# ============================================================
 
-    for epoch in range(n_epochs):
-        optimizer.zero_grad()
-        cost = simulate_episode(gains)
-        cost.backward()
-        optimizer.step()
+def train(num_iters=50, lr=1e-1):
+    theta = torch.zeros(12, dtype=torch.float32, device=DEVICE, requires_grad=True)
+    opt = Adam([theta], lr=lr)
 
-        if (epoch + 1) % 10 == 0 or epoch == 0:
-            print("Epoch =", epoch+1)
-            print("Cost =", float(cost))
-            print("Gains =", gains.detach().cpu().tolist())
+    best = BASE_GAINS.copy().tolist()
+    bestJ = float("inf")
 
-    print("# --- Optimización terminada ---")
-    print("Gains_opt =", gains.detach().cpu().tolist())
+    for it in range(num_iters):
+        opt.zero_grad()
+        J, gains = rollout(theta)
+        J.backward()
+        opt.step()
 
+        gains_np = gains.detach().cpu().numpy().tolist()
+
+        if J.item() < bestJ:
+            bestJ = J.item()
+            best = gains_np
+
+        print(f"[{it+1:03d}] J={J.item():.4f}  BEST_J={bestJ:.4f}")
+        print("gains =", best)
+
+    print("\nMEJORES GANANCIAS FINALES:")
+    print("gains =", best)
+    return best
+
+# ============================================================
+# MAIN
+# ============================================================
 
 if __name__ == "__main__":
-    main()
+    t0 = time.time()
+    best = train(50, 1e-1)
+    print("Tiempo:", time.time()-t0)

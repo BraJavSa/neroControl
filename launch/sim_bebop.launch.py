@@ -44,12 +44,6 @@ def generate_launch_description():
             output='screen',
         ),
 
-        Node(
-            package='nero_drone',
-            executable='safe_bebop_republisher',
-            name='safe_bebop_republisher',
-            output='screen'
-        ),
 
         Node(
             package='nero_drone',
