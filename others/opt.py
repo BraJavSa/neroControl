@@ -1,143 +1,150 @@
-#!/usr/bin/env python3
+import rclpy
+from rclpy.node import Node
+from nav_msgs.msg import Odometry
+from std_msgs.msg import Float64MultiArray
+from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
+from rcl_interfaces.srv import SetParameters
+from tf_transformations import euler_from_quaternion
 import numpy as np
-from math import sin, cos, pi, atan2
-from cmaes import CMA
+from collections import deque
+import csv
+import os
+from datetime import datetime
 
-# ===================================
-#  Modelo dinámico simplificado Bebop
-# ===================================
-Model_simp = np.array([
-    0.8417, 0.18227,
-    0.8354, 0.17095,
-    3.966,  4.001,
-    9.8524, 4.7295
-])
+class DroneIntelligentOptimizer(Node):
+    def __init__(self):
+        super().__init__('drone_intelligent_optimizer')
 
-Ku = np.diag([Model_simp[0], Model_simp[2], Model_simp[4], Model_simp[6]])
-Kv = np.diag([Model_simp[1], Model_simp[3], Model_simp[5], Model_simp[7]])
+        # 1. Configuración de Tiempos (10 Segundos)
+        self.freq_odom = 30
+        self.window_seconds = 10.0 
+        self.buffer_size = int(self.freq_odom * self.window_seconds)
 
-# ==============================
-#  Trayectoria tipo ∞ (offline)
-# ==============================
-dt = 1.0/30.0
-T = 40.0
-N = int(T/dt)
-omega = 2*pi/T
+        # 2. Valores Iniciales Reales
+        self.axes = ['x', 'y', 'z', 'psi']
+        self.params = {
+            'ksp_x': 0.6, 'ksd_x': 1.5, 'kp_x': 0.3,
+            'ksp_y': 0.6, 'ksd_y': 1.5, 'kp_y': 0.3,
+            'ksp_z': 2.5, 'ksd_z': 5.5, 'kp_z': 0.8,
+            'ksp_psi': 3.0, 'ksd_psi': 7.5, 'kp_psi': 0.6
+        }
 
-def generate_ref():
-    ref = np.zeros((N,7))
-    for k in range(N):
-        t = k*dt
-        x = 1.5*np.sin(omega*t)
-        y = 1.5*np.sin(omega*t)*np.cos(omega*t)
-        z = 1.0 + 0.3*np.sin(0.5*omega*t) - 0.5
+        self.LR = 0.03
+        self.history = {axis: deque(maxlen=self.buffer_size) for axis in self.axes}
+        self.current_ref = {axis: 0.0 for axis in self.axes}
+        
+        self.setup_logger()
 
-        # derivadas finitas
-        t_prev = t - dt
-        xp = 1.5*np.sin(omega*t_prev)
-        yp = 1.5*np.sin(omega*t_prev)*np.cos(omega*t_prev)
-        zp = 1.0 + 0.3*np.sin(0.5*omega*t_prev) - 0.5
+        # 3. Cliente de Servicio
+        self.param_client = self.create_client(SetParameters, '/nero_drone_node/set_parameters')
+        
+        # Suscripciones
+        self.create_subscription(Odometry, '/odometry/filtered', self.odom_callback, 10)
+        self.create_subscription(Float64MultiArray, '/bebop/ref_vec', self.ref_callback, 10)
+        
+        # Timer de Optimización
+        self.timer = self.create_timer(self.window_seconds, self.optimize_logic)
+        self.get_logger().info("Nodo de Optimización iniciado. Monitoreando /nero_drone_node cada 10s.")
 
-        dx = (x - xp)/dt
-        dy = (y - yp)/dt
-        dz = (z - zp)/dt
+    def setup_logger(self):
+        base_path = os.path.expanduser("~/ros2_ws/src/nero_drone/data")
+        os.makedirs(base_path, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.log_filename = os.path.join(base_path, f"learning_log_10s_{timestamp}.csv")
+        header = ['time']
+        for axis in self.axes:
+            header += [f'ksp_{axis}', f'ksd_{axis}', f'kp_{axis}', f'error_{axis}', f'osc_{axis}']
+        with open(self.log_filename, 'w', newline='') as f:
+            csv.writer(f).writerow(header)
 
-        yaw = atan2(dy, dx)
-        ref[k,:] = [x,y,z,yaw,dx,dy,dz]
+    def odom_callback(self, msg):
+        q = msg.pose.pose.orientation
+        _, _, yaw = euler_from_quaternion([q.x, q.y, q.z, q.w])
+        t = self.get_clock().now().nanoseconds / 1e9
+        data = {
+            'x': (msg.pose.pose.position.x, msg.twist.twist.linear.x),
+            'y': (msg.pose.pose.position.y, msg.twist.twist.linear.y),
+            'z': (msg.pose.pose.position.z, msg.twist.twist.linear.z),
+            'psi': (yaw, msg.twist.twist.angular.z)
+        }
+        for axis in self.axes:
+            pos, vel = data[axis]
+            self.history[axis].append({'t': t, 'pos': pos, 'vel': vel, 'ref': self.current_ref[axis]})
 
-    return ref
+    def ref_callback(self, msg):
+        if len(msg.data) >= 4:
+            for i, axis in enumerate(self.axes):
+                self.current_ref[axis] = msg.data[i]
 
-ref = generate_ref()
+    def optimize_logic(self):
+        # Verificación no bloqueante del servicio
+        if not self.param_client.service_is_ready():
+            self.get_logger().warn("Esperando que el servicio /set_parameters esté disponible...")
+            return
 
-# =============================
-#     Simulación + Control
-# =============================
-uSat = np.array([1,1,1,1])
+        new_params = []
+        log_row = [self.get_clock().now().nanoseconds / 1e9]
+        
+        for axis in self.axes:
+            hist = list(self.history[axis])
+            if len(hist) < self.buffer_size:
+                log_row += [self.params[f'ksp_{axis}'], self.params[f'ksd_{axis}'], self.params[f'kp_{axis}'], 0.0, 0.0]
+                continue
 
-def simulate_cost(g):
-    g = np.array(g)
-    Ksp = np.diag(g[0:4])
-    Ksd = np.diag(g[4:8])
-    Kp  = np.diag(g[8:12])
+            # Análisis de datos
+            errors = [abs(h['pos'] - h['ref']) for h in hist]
+            avg_error = np.mean(errors)
+            vels = [h['vel'] for h in hist]
+            zero_crossings = np.count_nonzero(np.diff(np.sign(vels)))
+            max_pos = max([h['pos'] for h in hist]); min_pos = min([h['pos'] for h in hist])
+            
+            overshoot = max(0, max_pos - self.current_ref[axis]) if self.current_ref[axis] >= 0 else max(0, abs(min_pos) - abs(self.current_ref[axis]))
 
-    x = np.zeros(4)    # [x,y,z,yaw]
-    xdot = np.zeros(4)
-    cost = 0.0
+            # Ajustes
+            if zero_crossings > 8:
+                self.params[f'ksd_{axis}'] *= (1.0 + self.LR * 1.5); self.params[f'kp_{axis}'] *= 0.92
+            elif overshoot > 0.05:
+                self.params[f'ksd_{axis}'] *= (1.0 + self.LR * 0.8); self.params[f'kp_{axis}'] *= 0.97
+            elif avg_error > 0.10:
+                self.params[f'kp_{axis}'] *= (1.0 + self.LR * 1.0); self.params[f'ksp_{axis}'] *= (1.0 + self.LR * 0.7)
 
-    for k in range(N):
-        xd,yd,zd,psid,dxd,dyd,dzd = ref[k]
-        X  = np.array([x[0],x[1],x[2],x[3]])
-        dX = np.array([xdot[0],xdot[1],xdot[2],xdot[3]])
-        Xd = np.array([xd,yd,zd,psid])
-        dXd= np.array([dxd,dyd,dzd,0.0])
+            # Clamping
+            self.params[f'kp_{axis}'] = np.clip(self.params[f'kp_{axis}'], 0.1, 7.0)
+            self.params[f'ksd_{axis}'] = np.clip(self.params[f'ksd_{axis}'], 0.5, 12.0)
+            self.params[f'ksp_{axis}'] = np.clip(self.params[f'ksp_{axis}'], 0.2, 4.0)
 
-        # error de orientación
-        Xtil = Xd - X
-        if abs(Xtil[3]) > pi:
-            Xtil[3] -= 2*pi*np.sign(Xtil[3])
+            log_row += [self.params[f'ksp_{axis}'], self.params[f'ksd_{axis}'], self.params[f'kp_{axis}'], avg_error, zero_crossings]
 
-        # controlador cinemático + compensador
-        Ucw = dXd + Ksp @ np.tanh(Kp @ Xtil)
-        Udw = Ksd @ (Ucw - dX)
+            for suffix in ['ksp', 'ksd', 'kp']:
+                p_name = f'{suffix}_{axis}'
+                new_params.append(Parameter(name=p_name, value=ParameterValue(type=ParameterType.PARAMETER_DOUBLE, double_value=float(self.params[p_name]))))
 
-        psi = x[3]
-        F = np.array([
-            [cos(psi),-sin(psi),0,0],
-            [sin(psi), cos(psi),0,0],
-            [0,0,1,0],
-            [0,0,0,1]
-        ])
+        with open(self.log_filename, 'a', newline='') as f:
+            csv.writer(f).writerow(log_row)
 
-        # inversión aproximada
-        u = np.linalg.pinv(Ku) @ np.linalg.pinv(F) @ (Udw + Kv@dX)
-        u = np.clip(u, -uSat, uSat)
+        # Envío asíncrono
+        req = SetParameters.Request()
+        req.parameters = new_params
+        future = self.param_client.call_async(req)
+        future.add_done_callback(self.response_callback)
 
-        # dinamica
-        xddot = F@(Ku@u) - Kv@xdot
-        xdot += xddot*dt
-        x += xdot*dt
+    def response_callback(self, future):
+        try:
+            res = future.result()
+            self.get_logger().info(f"Éxito: {len(res.results)} parámetros actualizados en /nero_drone_node.")
+        except Exception as e:
+            self.get_logger().error(f"Error al actualizar parámetros: {e}")
 
-        cost += np.sum((Xd - X)**2)
+def main():
+    rclpy.init()
+    node = DroneIntelligentOptimizer()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
-    return cost/N
-
-
-# =============================
-#       CMA-ES (cmaes)
-# =============================
-x0 = np.array([
-    1.1,1.1,3.0,1.5,
-    0.8,0.8,1.8,1.2,
-    1.6,1.6,1.0,1.5
-])
-
-lb = np.full(12, 0.1)
-ub = np.full(12, 5.0)
-bounds = np.column_stack((lb, ub))  # (12×2)
-
-optimizer = CMA(
-    mean=x0,
-    sigma=0.1,
-    bounds=bounds,
-    population_size=18
-)
-
-maxiter = 60
-best = (x0, float("inf"))
-
-for gen in range(maxiter):
-    solutions=[]
-    for _ in range(optimizer.population_size):
-        x = optimizer.ask()
-        f = simulate_cost(x)
-        solutions.append((x,f))
-        if f < best[1]:
-            best = (x,f)
-
-    optimizer.tell(solutions)
-    print(f"[GEN {gen:02d}] best cost = {best[1]:.5f}")
-
-print("\n===================")
-print(" BEST GAINS FOUND ")
-print("===================")
-print(best[0])
+if __name__ == '__main__':
+    main()

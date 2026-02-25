@@ -14,7 +14,6 @@ def generate_launch_description():
 
     return LaunchDescription([
 
-        # === SIMULADOR BEBOP ===
         Node(
             package='nero_drone',
             executable='sim120.py',
@@ -92,6 +91,13 @@ def generate_launch_description():
             package='rviz2',
             executable='rviz2',
             arguments=['-d', rviz_config],
+            output='screen'
+        ),
+
+        Node(
+            package='nero_drone',
+            executable='controlador.py',
+            name='controlador',
             output='screen'
         ),
         

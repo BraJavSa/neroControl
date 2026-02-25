@@ -65,8 +65,8 @@ class PositionFusion(Node):
         # Invertir ejes Y y Z (NED → ENU)
         corrected = type(q)()
         corrected.x =  q.x
-        corrected.y = -q.y
-        corrected.z = -q.z
+        corrected.y =  q.y
+        corrected.z =  q.z
         corrected.w =  q.w
 
         self.last_orientation = corrected

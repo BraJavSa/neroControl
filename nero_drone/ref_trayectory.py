@@ -8,7 +8,6 @@ from tf_transformations import quaternion_from_euler
 import numpy as np
 import time
 
-
 class RefPublisher(Node):
     def __init__(self):
         super().__init__("trajectory_ref_publisher")
@@ -21,54 +20,64 @@ class RefPublisher(Node):
         self.omega = 2 * np.pi / self.T_total
         self.t0 = time.time()
 
+        # Estado persistente para continuidad de ángulo
         self.first_sample = True
-        self.last_yaw = 0.0
+        self.last_unwrapped_yaw = 0.0
+        self.last_raw_yaw = 0.0
 
-        # main timer
         self.timer_ref = self.create_timer(self.dt, self.timer_callback)
-
-        self.get_logger().info("Publishing reference trajectory (20 Hz).")
+        self.get_logger().info("Publishing infinite continuous trajectory (30 Hz).")
 
     def timer_callback(self):
-        t = time.time() - self.t0
-        if t > self.T_total:
-            self.get_logger().info("Trajectory completed.")
-            self.timer_ref.cancel()
-            self.destroy_node()
-            return
-
+        t_raw = time.time() - self.t0
+        t = t_raw % self.T_total 
         w = self.omega
 
-        # position
+        # Ecuaciones de posición
         x = 0.8 * np.sin(w * t)
         y = 0.8 * np.sin(w * t) * np.cos(w * t)
         z = 1.0 + 0.3 * np.sin(0.5 * w * t) 
 
-        # previous sample
-        x_prev = 0.8 * np.sin(w * (t - self.dt))
-        y_prev = 0.8 * np.sin(w * (t - self.dt)) * np.cos(w * (t - self.dt))
-        z_prev = 1.0 + 0.3 * np.sin(0.5 * w * (t - self.dt)) 
+        # Diferenciación para velocidad tangencial
+        t_prev = (t - self.dt) % self.T_total
+        x_prev = 0.8 * np.sin(w * t_prev)
+        y_prev = 0.8 * np.sin(w * t_prev) * np.cos(w * t_prev)
+        z_prev = 1.0 + 0.3 * np.sin(0.5 * w * t_prev) 
 
         dx = (x - x_prev) / self.dt
         dy = (y - y_prev) / self.dt
         dz = (z - z_prev) / self.dt
 
-        yaw = np.arctan2(dy, dx)
+        # --- Lógica de Yaw Continuo ---
+        current_raw_yaw = np.arctan2(dy, dx)
+        
         if self.first_sample:
-            self.last_yaw = yaw
+            self.last_raw_yaw = current_raw_yaw
+            self.last_unwrapped_yaw = current_raw_yaw
             self.first_sample = False
 
-        yaw = np.unwrap([self.last_yaw, yaw])[1]
-        wyaw = (yaw - self.last_yaw) / self.dt
-        self.last_yaw = yaw
+        # Calcular diferencia de ángulo y normalizar al rango [-pi, pi]
+        delta_yaw = current_raw_yaw - self.last_raw_yaw
+        delta_yaw = (delta_yaw + np.pi) % (2 * np.pi) - np.pi
+        
+        # Acumular el cambio para obtener un valor continuo (unwrapped)
+        current_unwrapped_yaw = self.last_unwrapped_yaw + delta_yaw
+        
+        # Velocidad angular
+        wyaw = (current_unwrapped_yaw - self.last_unwrapped_yaw) / self.dt
 
-        # publish array ref
+        # Actualizar estados previos
+        self.last_raw_yaw = current_raw_yaw
+        self.last_unwrapped_yaw = current_unwrapped_yaw
+
+        # Publicación
         msg = Float64MultiArray()
-        msg.data = [x, y, z, yaw, dx, dy, dz, wyaw]
+        msg.data = [float(x), float(y), float(z), float(current_unwrapped_yaw), 
+                    float(dx), float(dy), float(dz), float(wyaw)]
         self.pub_ref.publish(msg)
 
-        # publish TF
-        q = quaternion_from_euler(0.0, 0.0, yaw)
+        # TF Broadcast
+        q = quaternion_from_euler(0.0, 0.0, current_unwrapped_yaw)
         tmsg = TransformStamped()
         tmsg.header.stamp = self.get_clock().now().to_msg()
         tmsg.header.frame_id = "odom"
@@ -82,7 +91,6 @@ class RefPublisher(Node):
         tmsg.transform.rotation.w = q[3]
         self.tf_broadcaster.sendTransform(tmsg)
 
-
 def main():
     rclpy.init()
     node = RefPublisher()
@@ -93,7 +101,6 @@ def main():
     finally:
         if rclpy.ok():
             rclpy.shutdown()
-
 
 if __name__ == "__main__":
     main()

@@ -1,244 +1,150 @@
-#!/usr/bin/env python3
-import math
-import torch
+import rclpy
+from rclpy.node import Node
+from nav_msgs.msg import Odometry
+from std_msgs.msg import Float64MultiArray
+from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
+from rcl_interfaces.srv import SetParameters
+from tf_transformations import euler_from_quaternion
+import numpy as np
+from collections import deque
+import csv
+import os
+from datetime import datetime
 
-# ======================
-# Configuración global
-# ======================
+class SelectiveXYOptimizer(Node):
+    def __init__(self):
+        super().__init__('selective_xy_optimizer')
 
-device = torch.device("cpu")
-DT = 1.0 / 30.0
-T_TOTAL = 40.0
-OMEGA = 2.0 * math.pi / T_TOTAL
-U_SAT = 1.0  # saturación de comandos
+        # 1. Ventana de muestreo de 10 segundos
+        self.freq_odom = 30
+        self.window_seconds = 10.0 
+        self.buffer_size = int(self.freq_odom * self.window_seconds)
 
+        # 2. VALORES INICIALES (Basados en image_7c5f98.png)
+        self.params = {
+            # Ejes a Optimizar (XY)
+            'ksp_x': 1.01, 'ksd_x': 8.65, 'kp_x': 0.32,
+            'ksp_y': 0.94, 'ksd_y': 8.14, 'kp_y': 0.598,
+            
+            'ksp_z': 1.8, 'ksd_z': 4.5, 'kp_z': 0.6,
+            'ksp_psi': 3.0, 'ksd_psi': 5.5, 'kp_psi': 0.7,
+            
+            # Términos KD fijos en 0.0
+            'kd_x': 0.0, 'kd_y': 0.0, 'kd_z': 0.0, 'kd_psi': 0.0
+        }
 
-# ======================
-# Parámetros del modelo (como en tu código)
-# ======================
+        # 3. Configuración de aprendizaje para XY
+        self.axes_to_optimize = ['x', 'y']
+        self.LR = 0.1
+        self.DEADZONE = 0.05 
 
-MODEL_SIMP = torch.tensor([
-    0.8417, 0.18227,
-    0.8354, 0.17095,
-    3.966,  4.001,
-    9.8524, 4.7295
-], dtype=torch.float32, device=device)
+        self.history = {axis: deque(maxlen=self.buffer_size) for axis in self.axes_to_optimize}
+        self.current_ref = {axis: 0.0 for axis in self.axes_to_optimize}
+        
+        self.setup_logger()
+        self.param_client = self.create_client(SetParameters, '/nero_drone_node/set_parameters')
+        
+        self.create_subscription(Odometry, '/odometry/filtered', self.odom_callback, 10)
+        self.create_subscription(Float64MultiArray, '/bebop/ref_vec', self.ref_callback, 10)
+        
+        self.timer = self.create_timer(self.window_seconds, self.optimize_logic)
+        self.get_logger().info("Optimizador Selectivo XY iniciado con valores base de imagen.")
 
-Ku_diag = MODEL_SIMP[[0, 2, 4, 6]]  # [0, 2, 4, 6]
-Kv_diag = MODEL_SIMP[[1, 3, 5, 7]]  # [1, 3, 5, 7]
+    def setup_logger(self):
+        base_path = os.path.expanduser("~/ros2_ws/src/nero_drone/data")
+        os.makedirs(base_path, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.log_filename = os.path.join(base_path, f"selective_xy_log_{timestamp}.csv")
+        header = ['time'] + list(self.params.keys()) + ['error_x', 'error_y']
+        with open(self.log_filename, 'w', newline='') as f:
+            csv.writer(f).writerow(header)
 
-Ku = torch.diag(Ku_diag)
-Kv = torch.diag(Kv_diag)
+    def odom_callback(self, msg):
+        t = self.get_clock().now().nanoseconds / 1e9
+        data = {'x': msg.pose.pose.position.x, 'y': msg.pose.pose.position.y}
+        vel = {'x': msg.twist.twist.linear.x, 'y': msg.twist.twist.linear.y}
+        for axis in self.axes_to_optimize:
+            self.history[axis].append({'t': t, 'pos': data[axis], 'vel': vel[axis], 'ref': self.current_ref[axis]})
 
+    def ref_callback(self, msg):
+        if len(msg.data) >= 2:
+            self.current_ref['x'] = msg.data[0]
+            self.current_ref['y'] = msg.data[1]
 
-# ======================
-# Utilidades
-# ======================
+    def optimize_logic(self):
+        if not self.param_client.service_is_ready(): return
 
-def wrap_angle(angle: torch.Tensor) -> torch.Tensor:
-    return torch.atan2(torch.sin(angle), torch.cos(angle))
+        log_row = [self.get_clock().now().nanoseconds / 1e9]
+        errors_summary = {'x': 0.0, 'y': 0.0}
+        
+        for axis in self.axes_to_optimize:
+            hist = list(self.history[axis])
+            if len(hist) < self.buffer_size: continue
 
+            errors = [abs(h['pos'] - h['ref']) for h in hist]
+            avg_error = np.mean(errors)
+            errors_summary[axis] = avg_error
+            vel_std = np.std([h['vel'] for h in hist])
+            
+            max_pos = max([h['pos'] for h in hist]); min_pos = min([h['pos'] for h in hist])
+            ref = self.current_ref[axis]
+            overshoot = max(0, max_pos - ref) if ref >= 0 else max(0, abs(min_pos) - abs(ref))
 
-def rotation_F(yaw: torch.Tensor) -> torch.Tensor:
-    c = torch.cos(yaw)
-    s = torch.sin(yaw)
-    F = torch.zeros(4, 4, dtype=torch.float32, device=device)
-    F[0, 0] = c
-    F[0, 1] = -s
-    F[1, 0] = s
-    F[1, 1] = c
-    F[2, 2] = 1.0
-    F[3, 3] = 1.0
-    return F
+            # Heurística de ajuste para XY
+            if vel_std > 0.08 and avg_error < 0.15: # Oscilación en llegada
+                self.params[f'ksd_{axis}'] *= (1.0 + self.LR * 1.8)
+                self.params[f'kp_{axis}'] *= 0.95
+                self.get_logger().info(f"[{axis.upper()}] Reduciendo oscilación.")
+            elif overshoot > 0.08: # Control de Overshoot
+                self.params[f'ksd_{axis}'] *= (1.0 + self.LR * 1.2)
+                self.params[f'ksp_{axis}'] *= 0.96
+                self.get_logger().info(f"[{axis.upper()}] Corrigiendo overshoot.")
+            elif avg_error > self.DEADZONE and vel_std < 0.04: # Error de estado estacionario
+                self.params[f'kp_{axis}'] *= (1.0 + self.LR * 1.0)
+                self.get_logger().info(f"[{axis.upper()}] Ajustando error de posición.")
 
+            # Límites de seguridad (Clamping)
+            self.params[f'kp_{axis}'] = np.clip(self.params[f'kp_{axis}'], 0.1, 1.5)
+            self.params[f'ksd_{axis}'] = np.clip(self.params[f'ksd_{axis}'], 0.5, 8.0)
+            self.params[f'ksp_{axis}'] = np.clip(self.params[f'ksp_{axis}'], 0.2, 3.0)
 
-# ======================
-# Trayectoria de referencia (30 Hz)
-# ======================
+        # Sincronización de los 16 parámetros
+        new_params_list = []
+        for p_name, p_value in self.params.items():
+            new_params_list.append(Parameter(
+                name=p_name,
+                value=ParameterValue(type=ParameterType.PARAMETER_DOUBLE, double_value=float(p_value))
+            ))
+            log_row.append(p_value)
 
-def ref_trajectory(t: torch.Tensor):
-    w = OMEGA
+        log_row += [errors_summary['x'], errors_summary['y']]
+        with open(self.log_filename, 'a', newline='') as f:
+            csv.writer(f).writerow(log_row)
 
-    x = 1.5 * torch.sin(w * t)
-    y = 1.5 * torch.sin(w * t) * torch.cos(w * t)
-    z = 0.5 + 0.3 * torch.sin(0.5 * w * t)
+        self.send_params(new_params_list)
 
-    dx = 1.5 * w * torch.cos(w * t)
-    dy = 1.5 * w * torch.cos(2.0 * w * t)
-    dz = 0.15 * w * torch.cos(0.5 * w * t)
+    def send_params(self, param_list):
+        req = SetParameters.Request()
+        req.parameters = param_list
+        self.param_client.call_async(req)
 
-    yaw = torch.atan2(dy, dx)
-
-    ddx = -1.5 * (w ** 2) * torch.sin(w * t)
-    ddy = -3.0 * (w ** 2) * torch.sin(2.0 * w * t)
-
-    denom = dx * dx + dy * dy + 1e-6
-    yaw_dot = (dx * ddy - dy * ddx) / denom
-
-    Xd = torch.stack([x, y, z, yaw])
-    dXd = torch.stack([dx, dy, dz, yaw_dot])
-    return Xd, dXd
-
-
-# ======================
-# Dinámica del dron
-# ======================
-
-def dynamics_step(x, xdot, u, dt):
-    yaw = x[3]
-    F = rotation_F(yaw)
-    xddot = F @ (Ku @ u) - (Kv @ xdot)
-
-    xdot_new = xdot + xddot * dt
-    x_new = x + xdot_new * dt
-    return x_new, xdot_new
-
-
-# ======================
-# Medición de odometría
-# ======================
-
-def compute_odom_from_state(x, xdot):
-    return x.clone(), xdot.clone()
-
-
-# ======================
-# Controlador inverso
-# ======================
-
-def inverse_dynamic_controller(X_meas, dX_meas, Xd, dXd, gains, Ucw_prev, dt):
-
-    g = gains
-    Ksp = torch.diag(g[0:4])
-    Ksd = torch.diag(g[4:8])
-    Kp  = torch.diag(g[8:12])
-
-    X = X_meas
-    dX = dX_meas
-
-    Xtil_raw = Xd - X
-    yaw_err = wrap_angle(Xtil_raw[3])
-    Xtil = torch.stack([Xtil_raw[0], Xtil_raw[1], Xtil_raw[2], yaw_err])
-
-    Ucw = dXd + Ksp @ torch.tanh(Kp @ Xtil)
-    dUcw = (Ucw - Ucw_prev) / dt
-
-    yaw = X[3]
-    F = rotation_F(yaw)
-    M = F @ Ku
-    rhs = dUcw + Ksd @ (Ucw - dX) + Kv @ dX
-    Udw = torch.linalg.solve(M, rhs)
-
-    Ud = torch.zeros(6, dtype=torch.float32, device=device)
-    Ud[0:3] = Udw[0:3]
-    Ud[5] = Udw[3]
-
-    return Ud, Ucw
-
-
-# ======================
-# Simulación + Costo suave (overshoot reducido)
-# ======================
-
-def simulate_episode(gains: torch.Tensor) -> torch.Tensor:
-
-    steps = int(T_TOTAL / DT)
-    odom_period = 6  # 30 Hz -> 5 Hz
-
-    x = torch.zeros(4, device=device)
-    xdot = torch.zeros(4, device=device)
-
-    X_meas, dX_meas = compute_odom_from_state(x, xdot)
-    Ucw_prev = torch.zeros(4, device=device)
-
-    cost = torch.tensor(0.0, device=device)
-    n_odom_samples = 0
-
-    for k in range(steps):
-        t = torch.tensor(k * DT, device=device)
-        Xd, dXd = ref_trajectory(t)
-
-        if k % odom_period == 0:
-            X_meas, dX_meas = compute_odom_from_state(x, xdot)
-
-            pos_err = Xd[0:3] - X_meas[0:3]
-            yaw_err = wrap_angle(Xd[3] - X_meas[3])
-
-            # tracking principal
-            loss_track = (pos_err**2).sum() + 0.5*(yaw_err**2)
-
-            # suavidad (velocidades pequeñas)
-            loss_vel = 0.1 * (dX_meas[0:3]**2).sum()
-
-            # derivada del error (match de velocidad)
-            de = dXd[0:3] - dX_meas[0:3]
-            loss_de = 0.4 * (de**2).sum()
-
-            # anti-lead puro: penaliza cuando va "por delante"
-            ahead = torch.dot(pos_err, dX_meas[0:3])
-            loss_ahead = 0.3 * torch.relu(-ahead)**2
-
-            loss = loss_track + loss_vel + loss_de + loss_ahead
-            cost = cost + loss
-            n_odom_samples += 1
-
-        Ud, Ucw_prev = inverse_dynamic_controller(
-            X_meas, dX_meas, Xd, dXd, gains, Ucw_prev, DT
-        )
-
-        Ud_clipped = torch.clamp(Ud, -U_SAT, U_SAT)
-
-        # energía de control (un poco más fuerte)
-        cost = cost + 0.02*(Ud_clipped[0:3]**2).sum()
-
-        # suavizar aceleraciones
-        yaw = x[3]
-        F = rotation_F(yaw)
-        xddot_proxy = F @ (Ku @ Ud_clipped[0:4]) - Kv @ xdot
-        cost = cost + 0.005*(xddot_proxy[0:3]**2).sum()
-
-        u_dyn = torch.stack([
-            Ud_clipped[0],
-            Ud_clipped[1],
-            Ud_clipped[2],
-            Ud_clipped[5]
-        ])
-
-        x, xdot = dynamics_step(x, xdot, u_dyn, DT)
-
-    if n_odom_samples > 0:
-        cost = cost / n_odom_samples
-
-    return cost
-
-
-# ======================
-# Optimización con Adam
-# ======================
+    def response_callback(self, future):
+        try:
+            future.result()
+            self.get_logger().info("Parámetros sincronizados exitosamente.")
+        except Exception as e:
+            self.get_logger().error(f"Error en comunicación: {e}")
 
 def main():
+    rclpy.init()
+    node = SelectiveXYOptimizer()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
-    init_gains = torch.tensor([0.29873043298721313, 0.2676296830177307, 0.34801220893859863, 2.4005675315856934, 5.621281623840332, 6.211113452911377, 5.958345413208008, 10.811837196350098, 0.28481119871139526, 0.2645106017589569, 3.430103063583374, 1.9461569786071777]
-    , dtype=torch.float32, device=device)
-    gains = torch.nn.Parameter(init_gains.clone())
-    optimizer = torch.optim.Adam([gains], lr=1e-1)
-
-    n_epochs = 200
-
-    for epoch in range(n_epochs):
-        optimizer.zero_grad()
-        cost = simulate_episode(gains)
-        cost.backward()
-        optimizer.step()
-
-        if (epoch + 1) % 10 == 0 or epoch == 0:
-            print("Epoch =", epoch+1)
-            print("Cost =", float(cost))
-            print("Gains =", gains.detach().cpu().tolist())
-
-    print("# --- Optimización terminada ---")
-    print("Gains_opt =", gains.detach().cpu().tolist())
-
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

@@ -12,7 +12,7 @@ public:
   : Node("safety_watchdog"),
     last_cmd_time_(this->now()),
     last_ref_time_(this->now()),
-    timeout_(0.2),          // 5 Hz
+    timeout_(0.4),          // 5 Hz
     stopped_(false),
     flying_(false)
   {

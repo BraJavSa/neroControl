@@ -1,5 +1,0 @@
-<sdf version="1.9">
-  <world name="empty">
-    <gravity>0 0 0</gravity>
-  </world>
-</sdf>

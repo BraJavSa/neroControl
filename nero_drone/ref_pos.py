@@ -8,12 +8,11 @@ from tf2_ros import TransformBroadcaster, Buffer, TransformListener
 import numpy as np
 import time
 
-
 class RefPublisher(Node):
     def __init__(self):
         super().__init__("trajectory_ref_publisher")
 
-        # publishers
+        # Publishers
         self.pub_ref = self.create_publisher(Float64MultiArray, "/bebop/ref_vec", 10)
         self.tf_br = TransformBroadcaster(self)
 
@@ -21,9 +20,9 @@ class RefPublisher(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
-        # parameters
+        # Parameters
         self.dt = 1.0 / 30.0     # 30 Hz
-        self.hold_time = 12.0    # seconds per pose
+        self.hold_time = 10.0    # Reduced to 10 seconds per pose
         self.t0 = time.time()
         self.idx = 0
 
@@ -36,40 +35,41 @@ class RefPublisher(Node):
             [L/2, -L/2, 1.2]        # Inferior derecha
         ])
 
-        # --------------------- Yaw asociados (en radianes) ---------------------
+        # Yaw in radians
         self.yaws = np.deg2rad([0, 50, 150, 180, 210])
 
-        # timer
+        # Timer
         self.timer = self.create_timer(self.dt, self.timer_cb)
 
-        self.get_logger().info("Publishing reference trajectory in ODOM frame (30 Hz).")
+        self.get_logger().info("Publishing infinite reference trajectory (10s per pose).")
 
     def timer_cb(self):
         elapsed = time.time() - self.t0
 
-        # advance to next pose
-        if elapsed > (self.idx + 1) * self.hold_time:
+        # Logic for infinite sequence
+        if elapsed > self.hold_time:
             self.idx += 1
+            self.t0 = time.time() # Reset reference time for the next point
+            
+            # Reset index to 0 if sequence ends (Infinite Loop)
             if self.idx >= len(self.points):
-                self.get_logger().info("Reference sequence completed.")
-                self.timer.cancel()
-                self.destroy_node()
-                return
+                self.idx = 0
+                self.get_logger().info("Restarting reference sequence.")
 
-        # current pose in INITIAL_FRAME
+        # Current pose in INITIAL_FRAME
         pos_i = self.points[self.idx]
         yaw_i = self.yaws[self.idx]
 
-        # get transform: odom -> initial_frame
+        # Get transform: odom -> initial_frame
         try:
             tf_oi = self.tf_buffer.lookup_transform(
                 "odom", "initial_frame", rclpy.time.Time()
             )
-        except:
-            self.get_logger().warn("Waiting for TF odom -> initial_frame")
+        except Exception:
+            self.get_logger().warn("Waiting for TF odom -> initial_frame", throttle_duration_sec=5.0)
             return
 
-        # extract translation and rotation
+        # Extract translation and rotation
         tx = tf_oi.transform.translation.x
         ty = tf_oi.transform.translation.y
         tz = tf_oi.transform.translation.z
@@ -79,16 +79,16 @@ class RefPublisher(Node):
         qz = tf_oi.transform.rotation.z
         qw = tf_oi.transform.rotation.w
 
-        # rotation matrix
+        # Rotation matrix
         R = self.quaternion_to_matrix(qx, qy, qz, qw)
 
-        # transform pos_i → pos_o
+        # Transform pos_i → pos_o
         pos_o = R.dot(pos_i) + np.array([tx, ty, tz])
 
-        # transform yaw
+        # Transform yaw
         yaw_o = yaw_i + self.quaternion_yaw(qx, qy, qz, qw)
 
-        # publish ref vector
+        # Publish ref vector
         msg = Float64MultiArray()
         msg.data = [
             float(pos_o[0]), float(pos_o[1]), float(pos_o[2]), float(yaw_o),
@@ -96,7 +96,7 @@ class RefPublisher(Node):
         ]
         self.pub_ref.publish(msg)
 
-        # publish TF odom -> ref
+        # Publish TF odom -> ref
         qz_ref = np.sin(yaw_o * 0.5)
         qw_ref = np.cos(yaw_o * 0.5)
 
@@ -112,9 +112,7 @@ class RefPublisher(Node):
 
         self.tf_br.sendTransform(tmsg)
 
-    # --- helpers ---
     def quaternion_to_matrix(self, x, y, z, w):
-        """Convert quaternion to rotation matrix."""
         R = np.zeros((3, 3))
         R[0, 0] = 1 - 2*(y*y + z*z)
         R[0, 1] = 2*(x*y - z*w)
@@ -128,9 +126,7 @@ class RefPublisher(Node):
         return R
 
     def quaternion_yaw(self, x, y, z, w):
-        """Extract yaw from quaternion."""
         return np.arctan2(2*(w*z + x*y), 1 - 2*(y*y + z*z))
-
 
 def main():
     rclpy.init()
@@ -142,7 +138,6 @@ def main():
     finally:
         if rclpy.ok():
             rclpy.shutdown()
-
 
 if __name__ == "__main__":
     main()

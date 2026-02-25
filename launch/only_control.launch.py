@@ -26,6 +26,13 @@ def generate_launch_description():
             name='tf_odom_to_map',
             output='screen'
         ),
+        
+        Node(
+            package='nero_drone',
+            executable='initial_frame.py',
+            name='initial_frame',
+            output='screen'
+        ),
 
 
         Node(
@@ -59,31 +66,12 @@ def generate_launch_description():
         ),
 
         Node(
-            package='robot_state_publisher',
-            executable='robot_state_publisher',
-            name='robot_state_publisher',
-            output='screen',
-            parameters=[{'robot_description': open(urdf_file).read()}]
-        ),
-
-        Node(
             package='nero_drone',
             executable='tf_cam',
             name='tf_cam',
             output='screen'
         ),
 
-        Node(
-            package='nero_drone',
-            executable='initial_frame.py',
-            name='initial_frame',
-            output='screen'
-        ),
-        Node(
-            package='rviz2',
-            executable='rviz2',
-            arguments=['-d', rviz_config],
-            output='screen'
-        ),
+
     ])
  

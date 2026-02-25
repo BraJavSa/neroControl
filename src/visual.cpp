@@ -1,146 +1,194 @@
-// DroneForceVisualizerXYZ: ROS2 node that subscribes to /bebop/camera_moving and /bebop/detected,
-// computes proportional 3D forces (Fx, Fy, Fz) from the transform base_link→tag_0, 
-// and visualizes them as an arrow marker in RViz.
-// Author: Brayan Saldarriaga-Mesa (bsaldarriaga@inaut.unsj.edu.ar), in collaboration with UFV.
-
 #include <rclcpp/rclcpp.hpp>
-#include <geometry_msgs/msg/transform_stamped.hpp>
-#include <visualization_msgs/msg/marker.hpp>
+#include <sensor_msgs/msg/image.hpp>
+#include <sensor_msgs/msg/camera_info.hpp>
 #include <std_msgs/msg/bool.hpp>
-#include <tf2_ros/transform_listener.h>
-#include <tf2_ros/buffer.h>
-#include <tf2/exceptions.h>
+#include <geometry_msgs/msg/transform_stamped.hpp>
+#include <cv_bridge/cv_bridge.h>
+#include <tf2_ros/transform_broadcaster.h>
+#include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2/LinearMath/Quaternion.h>
-#include <tf2/LinearMath/Vector3.h>
-#include <cmath>
+#include <opencv2/opencv.hpp>
 
-using namespace std::chrono_literals;
+// AprilTag headers (assuming standard apriltag library installation)
+extern "C" {
+    #include <apriltag/apriltag.h>
+    #include <apriltag/tag36h11.h>
+}
 
-class DroneForceVisualizerXYZ : public rclcpp::Node {
+class BebopTagNode : public rclcpp::Node {
 public:
-  DroneForceVisualizerXYZ()
-  : Node("drone_force_visualizer_xyz"),
-    tf_buffer_(this->get_clock()),
-    tf_listener_(tf_buffer_),
-    camera_moving_(false),
-    tag_detected_(false)
-  {
-    marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("drone_force_marker", 10);
-    sub_camera_moving_ = this->create_subscription<std_msgs::msg::Bool>(
-      "/bebop/camera_moving", 10,
-      std::bind(&DroneForceVisualizerXYZ::cameraMovingCallback, this, std::placeholders::_1));
-    sub_tag_detected_ = this->create_subscription<std_msgs::msg::Bool>(
-      "/bebop/detected", 10,
-      std::bind(&DroneForceVisualizerXYZ::tagDetectedCallback, this, std::placeholders::_1));
+    BebopTagNode() : Node("bebop_tag_node"), has_camera_info_(false) {
+        // Initialize AprilTag detector
+        tf_ = tag36h11_create();
+        td_ = apriltag_detector_create();
+        apriltag_detector_add_family(td_, tf_);
 
-    this->declare_parameter("k_x", 0.2);
-    this->declare_parameter("k_y", 0.2);
-    this->declare_parameter("k_z", 0.2);
-    this->declare_parameter("desired_distance", 2.0);
-    this->declare_parameter("z_ref_offset", 0.3);
-    this->declare_parameter("force_scale", 1.0);
+        // Publishers and Broadcasters
+        pub_detected_ = this->create_publisher<std_msgs::msg::Bool>("/bebop/detected", 10);
+        tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
 
-    this->get_parameter("k_x", kx_);
-    this->get_parameter("k_y", ky_);
-    this->get_parameter("k_z", kz_);
-    this->get_parameter("desired_distance", d_ref_);
-    this->get_parameter("z_ref_offset", z_ref_);
-    this->get_parameter("force_scale", scale_);
+        // Subscriptions
+        sub_info_ = this->create_subscription<sensor_msgs::msg::CameraInfo>(
+            "/bebop/camera/camera_info", 10,
+            std::bind(&BebopTagNode::camera_info_callback, this, std::placeholders::_1));
 
-    timer_ = this->create_wall_timer(100ms, std::bind(&DroneForceVisualizerXYZ::updateMarker, this));
-  }
+        sub_image_ = this->create_subscription<sensor_msgs::msg::Image>(
+            "/bebop/camera/image_raw", 10,
+            std::bind(&BebopTagNode::image_callback, this, std::placeholders::_1));
+
+        tag_size_ = 0.12; // Tag size in meters
+        cv::namedWindow("Bebop Camera", cv::WINDOW_AUTOSIZE);
+        RCLCPP_INFO(this->get_logger(), "Bebop AprilTag Node initialized.");
+    }
+
+    ~BebopTagNode() {
+        apriltag_detector_destroy(td_);
+        tag36h11_destroy(tf_);
+        cv::destroyAllWindows();
+    }
 
 private:
-  void cameraMovingCallback(const std_msgs::msg::Bool::SharedPtr msg) {
-    camera_moving_ = msg->data;
-  }
-
-  void tagDetectedCallback(const std_msgs::msg::Bool::SharedPtr msg) {
-    tag_detected_ = msg->data;
-  }
-
-  void updateMarker() {
-    double Fx = 0.0, Fy = 0.0, Fz = 0.0;
-    if (camera_moving_ || !tag_detected_) {
-      publishForceArrow(0.0, 0.0, 0.0);
-      return;
+    void camera_info_callback(const sensor_msgs::msg::CameraInfo::SharedPtr msg) {
+        if (has_camera_info_) return;
+        
+        cameraMatrix_ = (cv::Mat1d(3, 3) << 
+            msg->k[0], msg->k[1], msg->k[2],
+            msg->k[3], msg->k[4], msg->k[5],
+            msg->k[6], msg->k[7], msg->k[8]);
+        distCoeffs_ = cv::Mat(msg->d).clone();
+        
+        has_camera_info_ = true;
+        RCLCPP_INFO(this->get_logger(), "Camera Intrinsic parameters received and stored.");
     }
 
-    try {
-      geometry_msgs::msg::TransformStamped tf_tag =
-        tf_buffer_.lookupTransform("base_link", "tag_0", tf2::TimePointZero);
+    void image_callback(const sensor_msgs::msg::Image::SharedPtr msg) {
+        cv::Mat frame;
+        try {
+            frame = cv_bridge::toCvCopy(msg, "bgr8")->image;
+        } catch (cv_bridge::Exception& e) {
+            RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
+            return;
+        }
 
-      double x = tf_tag.transform.translation.x;
-      double y = tf_tag.transform.translation.y;
-      double z = tf_tag.transform.translation.z;
+        // Logic check: Wait for parameters before processing, but keep the window alive
+        if (!has_camera_info_) {
+            cv::putText(frame, "WAITING FOR CAMERA INFO...", cv::Point(30, 50),
+                        cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 165, 255), 2);
+            
+            auto det_msg = std_msgs::msg::Bool();
+            det_msg.data = false;
+            pub_detected_->publish(det_msg);
+            
+            cv::imshow("Bebop Camera", frame);
+            cv::waitKey(1);
+            return;
+        }
 
-      Fx =  kx_ * (x - d_ref_);
-      Fy =  ky_ * y;
-      Fz =  kz_ * (z + z_ref_);
-    } catch (tf2::TransformException &ex) {
-      Fx = Fy = Fz = 0.0;
+        // Detection Process
+        cv::Mat gray;
+        cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
+        image_u8_t im = { gray.cols, gray.rows, gray.cols, gray.data };
+        zarray_t* detections = apriltag_detector_detect(td_, &im);
+
+        // Publish boolean status
+        auto det_msg = std_msgs::msg::Bool();
+        det_msg.data = (zarray_size(detections) > 0);
+        pub_detected_->publish(det_msg);
+
+        for (int i = 0; i < zarray_size(detections); i++) {
+            apriltag_detection_t* det;
+            zarray_get(detections, i, &det);
+
+            // Pose Estimation
+            double s = tag_size_ / 2.0;
+            std::vector<cv::Point3f> objPts = {{-s,-s,0}, {s,-s,0}, {s,s,0}, {-s,s,0}};
+            std::vector<cv::Point2f> imgPts = {
+                {(float)det->p[0][0], (float)det->p[0][1]},
+                {(float)det->p[1][0], (float)det->p[1][1]},
+                {(float)det->p[2][0], (float)det->p[2][1]},
+                {(float)det->p[3][0], (float)det->p[3][1]}
+            };
+
+            cv::Mat rvec, tvec;
+            cv::solvePnP(objPts, imgPts, cameraMatrix_, distCoeffs_, rvec, tvec);
+
+            // Broadcast TF Transformation
+            cv::Mat R;
+            cv::Rodrigues(rvec, R);
+            publish_tf(R, tvec, det->id);
+
+            // Draw Visual Overlays
+            draw_detection(frame, imgPts, det->id, rvec, tvec);
+        }
+
+        apriltag_detections_destroy(detections);
+        cv::imshow("Bebop Camera", frame);
+        if (cv::waitKey(1) == 'q') rclcpp::shutdown();
     }
 
-    publishForceArrow(Fx, Fy, Fz);
-  }
+    void publish_tf(const cv::Mat& R, const cv::Mat& tvec, int id) {
+        geometry_msgs::msg::TransformStamped t;
+        t.header.stamp = this->get_clock()->now();
+        t.header.frame_id = "camera_gimbal"; 
+        t.child_frame_id = "tag_" + std::to_string(id);
 
-  void publishForceArrow(double Fx, double Fy, double Fz) {
-    visualization_msgs::msg::Marker arrow;
-    arrow.header.frame_id = "base_link";
-    arrow.header.stamp = now();
-    arrow.ns = "drone_force_xyz";
-    arrow.id = 1;
-    arrow.type = visualization_msgs::msg::Marker::ARROW;
-    arrow.action = visualization_msgs::msg::Marker::ADD;
-    arrow.pose.position.x = 0.0;
-    arrow.pose.position.y = 0.0;
-    arrow.pose.position.z = 0.0;
+        t.transform.translation.x = tvec.at<double>(0);
+        t.transform.translation.y = tvec.at<double>(1);
+        t.transform.translation.z = tvec.at<double>(2);
 
-    double magnitude = std::sqrt(Fx*Fx + Fy*Fy + Fz*Fz) * scale_;
-    arrow.scale.x = magnitude;
-    arrow.scale.y = 0.04;
-    arrow.scale.z = 0.04;
+        tf2::Matrix3x3 tf2_rot(
+            R.at<double>(0,0), R.at<double>(0,1), R.at<double>(0,2),
+            R.at<double>(1,0), R.at<double>(1,1), R.at<double>(1,2),
+            R.at<double>(2,0), R.at<double>(2,1), R.at<double>(2,2)
+        );
+        tf2::Quaternion q;
+        tf2_rot.getRotation(q);
+        t.transform.rotation.x = q.x();
+        t.transform.rotation.y = q.y();
+        t.transform.rotation.z = q.z();
+        t.transform.rotation.w = q.w();
 
-    if (magnitude < 1e-6) {
-      arrow.color.a = 0.0;
-      marker_pub_->publish(arrow);
-      return;
+        tf_broadcaster_->sendTransform(t);
     }
 
-    tf2::Vector3 from(1, 0, 0);
-    tf2::Vector3 to(Fx, Fy, Fz);
-    to.normalize();
-    tf2::Quaternion q;
-    q.setRotation(from.cross(to), std::acos(from.dot(to)));
-    q.normalize();
+    void draw_detection(cv::Mat& frame, const std::vector<cv::Point2f>& pts, int id, const cv::Mat& rvec, const cv::Mat& tvec) {
+        // Draw tag borders
+        for (int i = 0; i < 4; i++) {
+            cv::line(frame, pts[i], pts[(i+1)%4], cv::Scalar(0, 255, 0), 2);
+        }
+        cv::putText(frame, "ID: " + std::to_string(id), pts[0], 
+                    cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 0, 255), 2);
 
-    arrow.pose.orientation.x = q.x();
-    arrow.pose.orientation.y = q.y();
-    arrow.pose.orientation.z = q.z();
-    arrow.pose.orientation.w = q.w();
+        // Draw 3D Axes
+        std::vector<cv::Point3f> axis_3d = {{0,0,0}, {0.1,0,0}, {0,0.1,0}, {0,0,0.1}};
+        std::vector<cv::Point2f> axis_2d;
+        cv::projectPoints(axis_3d, rvec, tvec, cameraMatrix_, distCoeffs_, axis_2d);
 
-    arrow.color.a = 1.0;
-    arrow.color.r = 1.0;
-    arrow.color.g = 0.9;
-    arrow.color.b = 0.1;
+        cv::line(frame, axis_2d[0], axis_2d[1], cv::Scalar(255, 0, 0), 2); // X - Blue
+        cv::line(frame, axis_2d[0], axis_2d[2], cv::Scalar(0, 255, 0), 2); // Y - Green
+        cv::line(frame, axis_2d[0], axis_2d[3], cv::Scalar(0, 0, 255), 2); // Z - Red
+    }
 
-    marker_pub_->publish(arrow);
-  }
+    // ROS 2 members
+    rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr sub_info_;
+    rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr sub_image_;
+    rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr pub_detected_;
+    std::shared_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 
-  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr marker_pub_;
-  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr sub_camera_moving_;
-  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr sub_tag_detected_;
-  tf2_ros::Buffer tf_buffer_;
-  tf2_ros::TransformListener tf_listener_;
-  rclcpp::TimerBase::SharedPtr timer_;
-  double kx_, ky_, kz_, d_ref_, z_ref_, scale_;
-  bool camera_moving_;
-  bool tag_detected_;
+    // AprilTag members
+    apriltag_family_t* tf_;
+    apriltag_detector_t* td_;
+
+    // Camera calibration data
+    bool has_camera_info_;
+    cv::Mat cameraMatrix_;
+    cv::Mat distCoeffs_;
+    double tag_size_;
 };
 
-int main(int argc, char **argv) {
-  rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<DroneForceVisualizerXYZ>());
-  rclcpp::shutdown();
-  return 0;
+int main(int argc, char** argv) {
+    rclcpp::init(argc, argv);
+    rclcpp::spin(std::make_shared<BebopTagNode>());
+    rclcpp::shutdown();
+    return 0;
 }
