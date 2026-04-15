@@ -1,0 +1,10 @@
+opencv-python
+dt-apriltags
+matplotlib
+numpy
+pandas
+pupil-apriltags
+scipy
+screeninfo
+torch
+tf-transformations
