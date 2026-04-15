@@ -4,7 +4,7 @@ from ament_index_python.packages import get_package_share_directory
 import os
 
 def generate_launch_description():
-    pkg_share = get_package_share_directory('nero_drone')
+    pkg_share = get_package_share_directory('neroControl')
     urdf_file = os.path.join(pkg_share, 'urdf', 'bebop2.urdf')
     rviz_config = os.path.join(pkg_share, 'others', 'bebop2.rviz')
 
@@ -20,7 +20,7 @@ def generate_launch_description():
 
         # --- Nodo de traducción del joystick a comandos ---
         Node(
-            package='nero_drone',
+            package='neroControl',
             executable='Joy2Cmd',
             name='joy2cmd',
             output='screen'
@@ -28,7 +28,7 @@ def generate_launch_description():
 
         # --- Nodo TF de la cámara ---
         Node(
-            package='nero_drone',
+            package='neroControl',
             executable='tf_cam',
             name='tf_cam',
             output='screen'
@@ -36,7 +36,7 @@ def generate_launch_description():
 
         # --- Nodo TF del tag ---
         Node(
-            package='nero_drone',
+            package='neroControl',
             executable='tf_tag_bebop',
             name='tf_tag_bebop',
             output='screen'

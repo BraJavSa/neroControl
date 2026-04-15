@@ -42,7 +42,7 @@ class SelectiveXYOptimizer(Node):
         self.current_ref = {axis: 0.0 for axis in self.axes_to_optimize}
         
         self.setup_logger()
-        self.param_client = self.create_client(SetParameters, '/nero_drone_node/set_parameters')
+        self.param_client = self.create_client(SetParameters, '/neroControl_node/set_parameters')
         
         self.create_subscription(Odometry, '/odometry/filtered', self.odom_callback, 10)
         self.create_subscription(Float64MultiArray, '/bebop/ref_vec', self.ref_callback, 10)
@@ -51,7 +51,7 @@ class SelectiveXYOptimizer(Node):
         self.get_logger().info("Optimizador Selectivo XY iniciado con valores base de imagen.")
 
     def setup_logger(self):
-        base_path = os.path.expanduser("~/ros2_ws/src/nero_drone/data")
+        base_path = os.path.expanduser("~/ros2_ws/src/neroControl/data")
         os.makedirs(base_path, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.log_filename = os.path.join(base_path, f"selective_xy_log_{timestamp}.csv")

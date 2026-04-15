@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.5)
-project(nero_drone)
+project(neroControl)
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
@@ -98,17 +98,17 @@ install(TARGETS
 
 # ---------------- Python nodes, Launch, Config, URDF ----------------
 install(PROGRAMS
-  nero_drone/graphical.py nero_drone/apriltag.py
-  nero_drone/bebop_control_gui.py
-  nero_drone/ref_pos.py nero_drone/controlador.py
-  nero_drone/sim.py nero_drone/sim120.py
-  nero_drone/altitude.py
-  nero_drone/initial_frame.py
-  nero_drone/mpc_controlador.py
-  nero_drone/ontime_graphical.py
-  nero_drone/ref_trayectory.py
-  nero_drone/pypbsv.py
-  nero_drone/pyibsv.py
+  neroControl/graphical.py neroControl/apriltag.py
+  neroControl/bebop_control_gui.py
+  neroControl/ref_pos.py neroControl/controlador.py
+  neroControl/sim.py neroControl/sim120.py
+  neroControl/altitude.py
+  neroControl/initial_frame.py
+  neroControl/mpc_controlador.py
+  neroControl/ontime_graphical.py
+  neroControl/ref_trayectory.py
+  neroControl/pypbsv.py
+  neroControl/pyibsv.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

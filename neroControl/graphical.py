@@ -10,7 +10,7 @@ import sys
 
 class BebopVisualizer:
     def __init__(self):
-        self.default_dir = os.path.expanduser("~/ros2_ws/src/nero_drone/data")
+        self.default_dir = os.path.expanduser("~/ros2_ws/src/neroControl/data")
         os.makedirs(self.default_dir, exist_ok=True)
         
         self.current_file = self.get_latest_file()

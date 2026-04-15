@@ -4,7 +4,7 @@ from ament_index_python.packages import get_package_share_directory
 import os
 
 def generate_launch_description():
-    pkg_share = get_package_share_directory('nero_drone')
+    pkg_share = get_package_share_directory('neroControl')
     urdf_file = os.path.join(pkg_share, 'urdf', 'bebop2.urdf')
     rviz_config = os.path.join(pkg_share, 'others', 'bebop2.rviz')
 
@@ -12,33 +12,33 @@ def generate_launch_description():
         # --- Calibration Publisher --
         
         Node(
-            package='nero_drone',
+            package='neroControl',
             executable='isfly',
             name='isfly',
             output='screen',
         ),
         Node(
-            package='nero_drone',
+            package='neroControl',
             executable='tf_cam',
             name='tf_cam',
             output='screen'
         ),
         Node(
-            package='nero_drone',
+            package='neroControl',
             executable='tf_tag_bebop',
             name='tf_tag_bebop',
             output='screen'
         ),              
 
         Node(
-            package='nero_drone',
+            package='neroControl',
             executable='safety_watchdog',
             name='safety_watchdog',
             output='screen'
         ), 
         
         Node(
-            package='nero_drone',
+            package='neroControl',
             executable='safe_bebop_republisher',
             name='safe_bebop_republisher',
             output='screen'
@@ -47,7 +47,7 @@ def generate_launch_description():
 
 
         Node(
-            package='nero_drone',
+            package='neroControl',
             executable='bebop_control_gui.py',
             name='bebop_control_gui',
             output='screen'
@@ -67,13 +67,13 @@ def generate_launch_description():
         ),
 
         Node(
-            package='nero_drone',
+            package='neroControl',
             executable='ref_vec_filter',
             name='ref_vec_filter',
             output='screen'
         ),
         Node(
-            package='nero_drone',
+            package='neroControl',
             executable='controlador.py',
             name='controlador',
             output='screen'

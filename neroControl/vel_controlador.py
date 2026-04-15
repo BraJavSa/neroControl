@@ -195,7 +195,7 @@ class Bebop:
 # ============================================================================
 class NeroDroneNode(Node):
     def __init__(self):
-        super().__init__("nero_drone_node")
+        super().__init__("neroControl_node")
         self.drone = Bebop(self)
         self.create_timer(0.1, self.control_loop) 
         self.get_logger().info("Nero Drone Node: Geodesic Controller Active.")

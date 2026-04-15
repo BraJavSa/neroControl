@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-@file nero_drone_node.py
+@file neroControl_node.py
 @brief Dynamic control for Bebop with Feedforward Gain (Kd) integration.
 @details Adds Kd gains to scale the influence of reference velocities, 
          allowing full suppression of motion when gains are set to zero.
@@ -176,7 +176,7 @@ class Bebop:
 
 class NeroDroneNode(Node):
     def __init__(self):
-        super().__init__("nero_drone_node")
+        super().__init__("neroControl_node")
         self.drone = Bebop(self)
         self.create_timer(0.1, self.control_loop)
 

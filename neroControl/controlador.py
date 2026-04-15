@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-@file nero_drone_node.py
+@file neroControl_node.py
 @brief Dynamic control for Bebop with Feedforward Gain (Kd) integration.
 @details Adds Kd gains to scale the influence of reference velocities, 
          allowing full suppression of motion when gains are set to zero.
@@ -55,24 +55,25 @@ class Bebop:
         self.w_last_ref = np.zeros(8)
 
         # --- VALORES INICIALES (CALIBRADOS) ---
-        opt = 4 #opt 1 position, opt 2 trayectory, opt 3 visual without velocity, opt 4 visual tracking velocity control
+        self.opt = 1 #opt 1 position, opt 2 trayectory, opt 3 visual without velocity, opt 4 visual tracking velocity control
         initial_values = {}
 
-        if opt == 1:
+        if self.opt == 1:
             initial_values = {
-                'ksp_x': 0.8, 'ksp_y': 0.8, 'ksp_z': 2.0, 'ksp_psi': 2.0,
-                'ksd_x': 0.6, 'ksd_y': 0.6, 'ksd_z': 1.2, 'ksd_psi': 0.9,
-                'kp_x': 3.5,  'kp_y': 3.5,  'kp_z': 2.5,  'kp_psi': 3.5,
-                'kd_x': 1.0,  'kd_y': 1.0,  'kd_z': 1.0,  'kd_psi': 1.0
+                'ksp_x': 0.7, 'ksp_y': 0.7, 'ksp_z': 1.8, 'ksp_psi': 3.0,
+                'ksd_x': 0.8, 'ksd_y': 0.8, 'ksd_z': 4.5, 'ksd_psi': 5.5,
+                'kp_x': 0.8,  'kp_y': 0.8,  'kp_z': 0.6,  'kp_psi': 0.7,
+                'kd_x': 0.0,  'kd_y': 0.0,  'kd_z': 0.0,  'kd_psi': 0.0,
+                'kg1': 1.5, 'kg2': 1.5, 
             }
-        elif opt == 2:
+        elif self.opt == 2:
             initial_values = {
                 'ksp_x': 0.85, 'ksp_y': 0.95, 'ksp_z': 1.5, 'ksp_psi': 2.8,
                 'ksd_x': 0.2,  'ksd_y': 0.2,  'ksd_z': 2.0, 'ksd_psi': 2.5,
                 'kp_x': 0.6,   'kp_y': 0.6,   'kp_z': 1.5,  'kp_psi': 2.5,
                 'kd_x': 1.0,   'kd_y': 1.0,   'kd_z': 1.0,  'kd_psi': 1.0
             }
-        elif opt == 3:
+        elif self.opt == 3:
             initial_values = {
                 'ksp_x': 0.15, 'ksp_y': 0.15, 'ksp_z': 1.5, 'ksp_psi': 2.8,
                 'ksd_x': 0.5,  'ksd_y': 0.5,  'ksd_z': 2.0, 'ksd_psi': 2.5,
@@ -137,7 +138,8 @@ class Bebop:
         Ksd = np.diag([self.node.get_parameter(f'ksd_{a}').value for a in ['x','y','z','psi']])
         Kp  = np.diag([self.node.get_parameter(f'kp_{a}').value for a in ['x','y','z','psi']])
         Kd  = np.diag([self.node.get_parameter(f'kd_{a}').value for a in ['x','y','z','psi']])
-
+        Kg1  = self.node.get_parameter('kg1').value
+        Kg2  = self.node.get_parameter('kg2').value    
         Ku = np.diag([self.pPar.Model_simp[0], self.pPar.Model_simp[2], self.pPar.Model_simp[4], self.pPar.Model_simp[6]])
         Kv = np.diag([self.pPar.Model_simp[1], self.pPar.Model_simp[3], self.pPar.Model_simp[5], self.pPar.Model_simp[7]])
         
@@ -146,12 +148,16 @@ class Bebop:
 
         w_Xtil_raw = w_Xd - w_X
         w_Xtil_raw[3] = atan2(sin(w_Xtil_raw[3]), cos(w_Xtil_raw[3]))
-        self.pPos.w_Xtil[0:3] = np.clip(w_Xtil_raw[0:3], -1.0, 1.0)
+        self.pPos.w_Xtil[0:3] = w_Xtil_raw[0:3]
         self.pPos.w_Xtil[3] = w_Xtil_raw[3]
 
         # --- APLICACIÓN DE KD A LA VELOCIDAD DE REFERENCIA ---
         w_Ur_ant = np.copy(self.pSC.w_Ur)
-        w_Ur = (Kd @ w_dXd) + Ksp @ np.tanh(Kp @ self.pPos.w_Xtil)
+        if self.opt == 1 and np.linalg.norm(w_Xtil_raw[0:2]) < 0.11:
+            
+            w_Ur = (Kd @ w_dXd) + Ksp @ np.tanh(Kp*Kg2 @ self.pPos.w_Xtil)
+        else:
+            w_Ur = (Kd @ w_dXd) + Ksp @ np.tanh(Kp @ self.pPos.w_Xtil)
         # -----------------------------------------------------
 
         w_dUr = (w_Ur - w_Ur_ant) / self.dt
@@ -159,9 +165,12 @@ class Bebop:
 
         w_yaw = w_X[3]
         w_F_b = np.array([[cos(w_yaw), -sin(w_yaw), 0, 0], [sin(w_yaw), cos(w_yaw), 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]])
-
-        self.pSC.b_Ud = np.linalg.inv(w_F_b @ Ku) @ (w_dUr + Ksd @ (w_Ur - w_dX) + Kv @ w_dX)
-    
+        if self.opt == 1 and np.linalg.norm(w_Xtil_raw[0:2]) < 0.11:
+              Ksd1 = np.copy(Ksd)
+              Ksd1 [0:2] = Ksd [0:2] * Kg1 * (1+np.linalg.norm(w_Xtil_raw[0:2]))
+              self.pSC.b_Ud = np.linalg.inv(w_F_b @ Ku) @ (w_dUr + Ksd1 @ (w_Ur - w_dX) + Kv @ w_dX)
+        else:
+            self.pSC.b_Ud = np.linalg.inv(w_F_b @ Ku) @ (w_dUr + Ksd @ (w_Ur - w_dX) + Kv @ w_dX)
 
     def rSendControlSignals(self):
         if not self.ref_received or not self.is_flying: return
@@ -177,9 +186,10 @@ class Bebop:
 
 class NeroDroneNode(Node):
     def __init__(self):
-        super().__init__("nero_drone_node")
+        super().__init__("neroControl_node")
         self.drone = Bebop(self)
-        self.create_timer(0.1, self.control_loop)
+        time = 1/60
+        self.create_timer(time, self.control_loop)
 
     def control_loop(self):
         self.drone.rGetSensorData()

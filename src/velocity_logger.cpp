@@ -1,7 +1,7 @@
 // TopicLogger: Nodo ROS2 para registrar posiciones, velocidades, referencias y comandos del Bebop
 // con manejo continuo (sin saltos) de yaw y yawd, y cálculo estable de yaw_rate.
 // Ahora también filtra suavemente los comandos cmd_linx, cmd_liny, cmd_linz y cmd_angz.
-// Guarda automáticamente los logs en ~/ros2_ws/src/nero_drone/data
+// Guarda automáticamente los logs en ~/ros2_ws/src/neroControl/data
 // Autor: Brayan Saldarriaga-Mesa (bsaldarriaga@inaut.unsj.edu.ar)
 
 #include <rclcpp/rclcpp.hpp>
@@ -56,7 +56,7 @@ public:
             std::bind(&TopicLogger::refCallback, this, std::placeholders::_1));
 
         // ------------------- Directorio base ROS2 -------------------
-        std::string base_path = std::string(std::getenv("HOME")) + "/ros2_ws/src/nero_drone/data";
+        std::string base_path = std::string(std::getenv("HOME")) + "/ros2_ws/src/neroControl/data";
         fs::create_directories(base_path);  // asegúrate de que exista
 
         // ------------------- Archivo CSV con fecha y hora -------------------

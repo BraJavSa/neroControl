@@ -36,7 +36,7 @@ class DroneIntelligentOptimizer(Node):
         self.setup_logger()
 
         # 3. Cliente de Servicio
-        self.param_client = self.create_client(SetParameters, '/nero_drone_node/set_parameters')
+        self.param_client = self.create_client(SetParameters, '/neroControl_node/set_parameters')
         
         # Suscripciones
         self.create_subscription(Odometry, '/odometry/filtered', self.odom_callback, 10)
@@ -44,10 +44,10 @@ class DroneIntelligentOptimizer(Node):
         
         # Timer de Optimización
         self.timer = self.create_timer(self.window_seconds, self.optimize_logic)
-        self.get_logger().info("Nodo de Optimización iniciado. Monitoreando /nero_drone_node cada 10s.")
+        self.get_logger().info("Nodo de Optimización iniciado. Monitoreando /neroControl_node cada 10s.")
 
     def setup_logger(self):
-        base_path = os.path.expanduser("~/ros2_ws/src/nero_drone/data")
+        base_path = os.path.expanduser("~/ros2_ws/src/neroControl/data")
         os.makedirs(base_path, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.log_filename = os.path.join(base_path, f"learning_log_10s_{timestamp}.csv")
@@ -131,7 +131,7 @@ class DroneIntelligentOptimizer(Node):
     def response_callback(self, future):
         try:
             res = future.result()
-            self.get_logger().info(f"Éxito: {len(res.results)} parámetros actualizados en /nero_drone_node.")
+            self.get_logger().info(f"Éxito: {len(res.results)} parámetros actualizados en /neroControl_node.")
         except Exception as e:
             self.get_logger().error(f"Error al actualizar parámetros: {e}")
 

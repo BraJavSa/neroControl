@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <package format="3">
-  <name>nero_drone</name>
+  <name>neroControl</name>
   <version>0.0.0</version>
   <description>Paquete ROS2 mixto (C++ y Python) para prueba</description>
   <maintainer email="user@example.com">Brayan</maintainer>

@@ -153,7 +153,7 @@ class BebopBodySMC:
 
 class NeroDroneNode(Node):
     def __init__(self):
-        super().__init__("nero_drone_node")
+        super().__init__("neroControl_node")
         self.drone = BebopBodySMC(self)
         self.timer = self.create_timer(0.1, self.control_loop) 
         self.get_logger().info("Body-Frame Sliding Mode Controller Initialized.")

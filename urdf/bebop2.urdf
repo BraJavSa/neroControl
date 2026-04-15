@@ -8,7 +8,7 @@
     <visual>
       <geometry>
         <!-- Ajusta el scale si el mesh está en metros reales, déjalo en 1 1 1 -->
-        <mesh filename="package://nero_drone/meshes/bebop.dae" scale="0.001 0.001 0.001"/>
+        <mesh filename="package://neroControl/meshes/bebop.dae" scale="0.001 0.001 0.001"/>
       </geometry>
     </visual>
   </link>
@@ -21,7 +21,7 @@
   <link name="propeller_front_right">
     <visual>
       <geometry>
-        <mesh filename="package://nero_drone/meshes/propeller_cw.dae" scale="0.0007 0.0007 0.0007"/>
+        <mesh filename="package://neroControl/meshes/propeller_cw.dae" scale="0.0007 0.0007 0.0007"/>
       </geometry>
       <material name="almost_white">
         <color rgba="0.95 0.95 0.95 1"/>
@@ -38,7 +38,7 @@
   <link name="propeller_front_left">
     <visual>
       <geometry>
-        <mesh filename="package://nero_drone/meshes/propeller_ccw.dae" scale="0.0007 0.0007 0.0007"/>
+        <mesh filename="package://neroControl/meshes/propeller_ccw.dae" scale="0.0007 0.0007 0.0007"/>
       </geometry>
       <material name="almost_white">
         <color rgba="0.95 0.95 0.95 1"/>
@@ -55,7 +55,7 @@
   <link name="propeller_back_right">
     <visual>
       <geometry>
-        <mesh filename="package://nero_drone/meshes/propeller_ccw.dae" scale="0.0007 0.0007 0.0007"/>
+        <mesh filename="package://neroControl/meshes/propeller_ccw.dae" scale="0.0007 0.0007 0.0007"/>
       </geometry>
       <material name="dark_gray">
         <color rgba="0.1 0.1 0.1 1"/>
@@ -72,7 +72,7 @@
   <link name="propeller_back_left">
     <visual>
       <geometry>
-        <mesh filename="package://nero_drone/meshes/propeller_cw.dae" scale="0.0007 0.0007 0.0007"/>
+        <mesh filename="package://neroControl/meshes/propeller_cw.dae" scale="0.0007 0.0007 0.0007"/>
       </geometry>
       <material name="dark_gray">
         <color rgba="0.1 0.1 0.1 1"/>
