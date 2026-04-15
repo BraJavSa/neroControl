@@ -34,14 +34,14 @@ Reference format: (x, y, z, yaw, dx, dy, dz, dyaw)
 ros2 run neroControl ref_pos.py
 ```
 
-5. Offline Plotting (inside neroControl/neroControl)  
-```
-python3 graphical.py
+5. Offline Plotting  
+```bash
+ros2 run neroControl graphical.py
 ```
 
-6. Real‑Time Plotting (inside neroControl/neroControl)  
-```
-python3 graphs.py
+6. Real‑Time Plotting  
+```bash
+ros2 run neroControl ontime_graphical.py
 ```
 
 ## Launch Files
